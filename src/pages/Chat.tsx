@@ -1,21 +1,37 @@
 import { useState, useRef, useEffect } from 'react'
 import { Contact, ChatMessage } from '../types'
 import { Avatar } from '../components/ui'
-import { listConversations, listMessages, sendMessage as apiSendMessage, subscribeToMessages } from '../lib/api'
+import {
+  listConversations,
+  listMessages,
+  sendMessage as apiSendMessage,
+  subscribeToMessages,
+  listProfiles,
+  getOrCreateDirectConversation,
+} from '../lib/api'
 
 export default function Chat({ myId }: { myId: string }) {
   const [contacts, setContacts] = useState<Contact[]>([])
+  const [directory, setDirectory] = useState<{ id: string; name: string; initials: string; role: string; department: string }[]>([])
   const [conversations, setConversations] = useState<Record<string, ChatMessage[]>>({})
   const [activeId, setActiveId] = useState<string>('')
   const [search, setSearch] = useState('')
   const [draft, setDraft] = useState('')
+  const [startingChat, setStartingChat] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
+  function refreshContacts(selectId?: string) {
     listConversations(myId).then((list) => {
       setContacts(list)
-      if (list.length) setActiveId(list[0].id)
+      if (selectId) setActiveId(selectId)
+      else if (list.length && !activeId) setActiveId(list[0].id)
     })
+  }
+
+  useEffect(() => {
+    refreshContacts()
+    listProfiles().then((p) => setDirectory(p.filter((x) => x.id !== myId)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myId])
 
   useEffect(() => {
@@ -31,6 +47,10 @@ export default function Chat({ myId }: { myId: string }) {
   const messages = conversations[activeId] || []
 
   const filtered = contacts.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
+  const chattedProfileIds = new Set(contacts.map((c) => c.otherProfileId).filter(Boolean))
+  const peopleToStart = search
+    ? directory.filter((p) => !chattedProfileIds.has(p.id) && p.name.toLowerCase().includes(search.toLowerCase()))
+    : []
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -39,6 +59,17 @@ export default function Chat({ myId }: { myId: string }) {
   function selectContact(id: string) {
     setActiveId(id)
     setContacts((prev) => prev.map((c) => (c.id === id ? { ...c, unread: 0 } : c)))
+  }
+
+  async function startChatWith(otherId: string) {
+    setStartingChat(true)
+    try {
+      const conversationId = await getOrCreateDirectConversation(myId, otherId)
+      setSearch('')
+      refreshContacts(conversationId)
+    } finally {
+      setStartingChat(false)
+    }
   }
 
   function sendMessage(e: React.FormEvent) {
@@ -61,10 +92,6 @@ export default function Chat({ myId }: { myId: string }) {
     if (senderId === myId) return 'You'
     const c = contacts.find((x) => x.id === senderId)
     return c ? c.name : 'Unknown'
-  }
-
-  if (!active) {
-    return <div className="p-6 text-sm text-inkmuted">No conversations yet.</div>
   }
 
   return (
@@ -120,10 +147,44 @@ export default function Chat({ myId }: { myId: string }) {
               )}
             </button>
           ))}
+
+          {peopleToStart.length > 0 && (
+            <div className="border-t border-line">
+              <p className="px-4 pt-3 pb-1 text-[11px] font-medium text-inkmuted uppercase tracking-wide">
+                Start a new chat
+              </p>
+              {peopleToStart.map((p) => (
+                <button
+                  key={p.id}
+                  disabled={startingChat}
+                  onClick={() => startChatWith(p.id)}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition-colors disabled:opacity-60"
+                >
+                  <Avatar initials={p.initials} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-ink truncate">{p.name}</p>
+                    <p className="text-xs text-inkmuted truncate mt-0.5">{p.role} · {p.department}</p>
+                  </div>
+                  <span className="text-xs text-steel-600 shrink-0">Chat</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {filtered.length === 0 && peopleToStart.length === 0 && (
+            <p className="px-4 py-6 text-sm text-inkmuted text-center">
+              {search ? 'No people or conversations match.' : 'No conversations yet. Search to start one.'}
+            </p>
+          )}
         </div>
       </div>
 
       {/* Conversation */}
+      {!active ? (
+        <div className="flex-1 flex items-center justify-center bg-canvas text-sm text-inkmuted">
+          Select a conversation, or search for a person to start chatting.
+        </div>
+      ) : (
       <div className="flex-1 flex flex-col bg-canvas">
         <div className="h-16 border-b border-line bg-white flex items-center gap-3 px-5">
           <Avatar initials={active.initials} online={active.isGroup ? undefined : active.online} />
@@ -208,6 +269,7 @@ export default function Chat({ myId }: { myId: string }) {
           </button>
         </form>
       </div>
+      )}
     </div>
   )
 }

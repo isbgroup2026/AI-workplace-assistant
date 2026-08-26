@@ -93,6 +93,7 @@ export interface Contact {
   online: boolean
   isGroup?: boolean
   members?: number
+  otherProfileId?: string
   lastMessage: string
   lastTimestamp: string
   unread: number

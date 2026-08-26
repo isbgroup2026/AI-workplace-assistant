@@ -39,8 +39,10 @@ export async function getMyProfile(): Promise<DbProfile | null> {
   return data as DbProfile
 }
 
-export async function listProfiles(): Promise<{ id: string; name: string }[]> {
-  const { data, error } = await supabase.from('profiles').select('id, name')
+export async function listProfiles(): Promise<
+  { id: string; name: string; initials: string; role: string; department: string }[]
+> {
+  const { data, error } = await supabase.from('profiles').select('id, name, initials, role, department')
   if (error) {
     console.error('listProfiles error', error)
     return []
@@ -107,7 +109,7 @@ export async function listTasks(myId: string): Promise<Task[]> {
 export async function createTask(
   input: { title: string; description: string; assigneeId: string | null; dueDate: string; priority: TaskPriority; department: string },
   myId: string,
-): Promise<Task | null> {
+): Promise<Task> {
   const { data, error } = await supabase
     .from('tasks')
     .insert({
@@ -121,10 +123,7 @@ export async function createTask(
     })
     .select('*, assignee:assignee_id(name, initials)')
     .single()
-  if (error) {
-    console.error('createTask error', error)
-    return null
-  }
+  if (error) throw new Error(error.message)
   return taskFromRow(data as TaskRow, myId)
 }
 
@@ -184,7 +183,7 @@ export async function listMeetings(): Promise<Meeting[]> {
 export async function createMeeting(
   input: { title: string; date: string; time: string; durationMinutes: number; platform: MeetingPlatform; attendeeIds: string[]; agenda: string },
   myId: string,
-): Promise<Meeting | null> {
+): Promise<Meeting> {
   const { data, error } = await supabase
     .from('meetings')
     .insert({
@@ -199,14 +198,14 @@ export async function createMeeting(
     })
     .select('*')
     .single()
-  if (error) {
-    console.error('createMeeting error', error)
-    return null
-  }
+  if (error) throw new Error(error.message)
   const row = data as MeetingRow
   const attendeeIds = Array.from(new Set([...input.attendeeIds, myId]))
   if (attendeeIds.length) {
-    await supabase.from('meeting_attendees').insert(attendeeIds.map((user_id) => ({ meeting_id: row.id, user_id })))
+    const { error: attendeeErr } = await supabase
+      .from('meeting_attendees')
+      .insert(attendeeIds.map((user_id) => ({ meeting_id: row.id, user_id })))
+    if (attendeeErr) console.error('meeting_attendees insert error', attendeeErr)
   }
   const profiles = await listProfiles()
   const attendees = profiles.filter((p) => attendeeIds.includes(p.id)).map((p) => p.name)
@@ -318,6 +317,7 @@ export async function listConversations(myId: string): Promise<Contact[]> {
       online: false,
       isGroup: conv.is_group,
       members: conv.is_group ? (members || []).length : undefined,
+      otherProfileId: conv.is_group ? undefined : others[0]?.id,
       lastMessage: lastMsg?.text ?? 'No messages yet',
       lastTimestamp: lastMsg
         ? new Date(lastMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -326,6 +326,48 @@ export async function listConversations(myId: string): Promise<Contact[]> {
     })
   }
   return contacts
+}
+
+// Finds an existing 1:1 conversation with `otherId`, or creates one. Returns the conversation id.
+export async function getOrCreateDirectConversation(myId: string, otherId: string): Promise<string> {
+  const { data: myConvos } = await supabase.from('chat_members').select('conversation_id').eq('user_id', myId)
+  const myConvoIds = (myConvos || []).map((r) => r.conversation_id)
+
+  if (myConvoIds.length) {
+    const { data: theirConvos } = await supabase
+      .from('chat_members')
+      .select('conversation_id')
+      .eq('user_id', otherId)
+      .in('conversation_id', myConvoIds)
+    const sharedIds = (theirConvos || []).map((r) => r.conversation_id)
+    if (sharedIds.length) {
+      const { data: groupCheck } = await supabase
+        .from('chat_conversations')
+        .select('id')
+        .in('id', sharedIds)
+        .eq('is_group', false)
+        .limit(1)
+        .maybeSingle()
+      if (groupCheck) return groupCheck.id
+    }
+  }
+
+  const { data: newConvo, error } = await supabase
+    .from('chat_conversations')
+    .insert({ is_group: false, created_by: myId })
+    .select('id')
+    .single()
+  if (error) throw new Error(error.message)
+
+  const { error: memberErr } = await supabase
+    .from('chat_members')
+    .insert([
+      { conversation_id: newConvo.id, user_id: myId },
+      { conversation_id: newConvo.id, user_id: otherId },
+    ])
+  if (memberErr) throw new Error(memberErr.message)
+
+  return newConvo.id
 }
 
 export async function listMessages(conversationId: string): Promise<ChatMessage[]> {

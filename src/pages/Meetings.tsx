@@ -20,13 +20,14 @@ export default function Meetings({
   meetings: Meeting[]
   setMeetings: React.Dispatch<React.SetStateAction<Meeting[]>>
 }) {
-  const [profiles, setProfiles] = useState<{ id: string; name: string }[]>([])
+  const [profiles, setProfiles] = useState<{ id: string; name: string; initials: string; role: string; department: string }[]>([])
   useEffect(() => {
     listProfiles().then(setProfiles)
   }, [])
 
   const [view, setView] = useState<'list' | 'calendar'>('list')
   const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [scheduleError, setScheduleError] = useState('')
   const [rescheduleTarget, setRescheduleTarget] = useState<Meeting | null>(null)
 
   const [form, setForm] = useState({
@@ -35,7 +36,7 @@ export default function Meetings({
     time: '',
     duration: '30 min',
     platform: 'Google Meet' as MeetingPlatform,
-    attendees: '',
+    attendeeIds: [] as string[],
     agenda: '',
   })
 
@@ -48,27 +49,39 @@ export default function Meetings({
     return acc
   }, {})
 
+  function toggleAttendee(id: string) {
+    setForm((prev) => ({
+      ...prev,
+      attendeeIds: prev.attendeeIds.includes(id)
+        ? prev.attendeeIds.filter((x) => x !== id)
+        : [...prev.attendeeIds, id],
+    }))
+  }
+
   async function handleSchedule(e: React.FormEvent) {
     e.preventDefault()
     if (!form.title || !form.date || !form.time) return
-    const names = form.attendees ? form.attendees.split(',').map((a) => a.trim()).filter(Boolean) : []
-    const attendeeIds = profiles.filter((p) => names.includes(p.name)).map((p) => p.id)
+    setScheduleError('')
     const durationMinutes = parseInt(form.duration, 10) || 30
-    const created = await createMeeting(
-      {
-        title: form.title,
-        date: form.date,
-        time: `${form.time}:00`,
-        durationMinutes,
-        platform: form.platform,
-        attendeeIds,
-        agenda: form.agenda || 'No agenda provided.',
-      },
-      myId,
-    )
-    if (created) setMeetings((prev) => [created, ...prev])
-    setScheduleOpen(false)
-    setForm({ title: '', date: '', time: '', duration: '30 min', platform: 'Google Meet', attendees: '', agenda: '' })
+    try {
+      const created = await createMeeting(
+        {
+          title: form.title,
+          date: form.date,
+          time: `${form.time}:00`,
+          durationMinutes,
+          platform: form.platform,
+          attendeeIds: form.attendeeIds,
+          agenda: form.agenda || 'No agenda provided.',
+        },
+        myId,
+      )
+      setMeetings((prev) => [created, ...prev])
+      setScheduleOpen(false)
+      setForm({ title: '', date: '', time: '', duration: '30 min', platform: 'Google Meet', attendeeIds: [], agenda: '' })
+    } catch (err) {
+      setScheduleError(err instanceof Error ? err.message : 'Failed to schedule meeting.')
+    }
   }
 
   function cancelMeeting(id: string) {
@@ -210,6 +223,11 @@ export default function Meetings({
 
       <Modal open={scheduleOpen} onClose={() => setScheduleOpen(false)} title="Schedule meeting">
         <form onSubmit={handleSchedule}>
+          {scheduleError && (
+            <p className="text-sm text-signal-red bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-4">
+              {scheduleError}
+            </p>
+          )}
           <Field label="Title">
             <input
               className={inputClass}
@@ -265,13 +283,26 @@ export default function Meetings({
               </select>
             </Field>
           </div>
-          <Field label="Attendees (comma separated)">
-            <input
-              className={inputClass}
-              value={form.attendees}
-              onChange={(e) => setForm({ ...form, attendees: e.target.value })}
-              placeholder="Ravi Shah, Priya Nair"
-            />
+          <Field label="Attendees">
+            <div className="border border-line rounded-lg divide-y divide-line max-h-40 overflow-y-auto">
+              {profiles
+                .filter((p) => p.id !== myId)
+                .map((p) => (
+                  <label key={p.id} className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={form.attendeeIds.includes(p.id)}
+                      onChange={() => toggleAttendee(p.id)}
+                      className="rounded border-line"
+                    />
+                    <span className="text-ink">{p.name}</span>
+                    <span className="text-xs text-inkmuted ml-auto">{p.department}</span>
+                  </label>
+                ))}
+              {profiles.length <= 1 && (
+                <p className="px-3 py-2 text-xs text-inkmuted">No other employees found yet.</p>
+              )}
+            </div>
           </Field>
           <Field label="Agenda">
             <textarea

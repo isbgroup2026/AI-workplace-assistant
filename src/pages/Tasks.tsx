@@ -27,6 +27,7 @@ export default function Tasks({
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'All'>('All')
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [createError, setCreateError] = useState('')
   const [detailTask, setDetailTask] = useState<Task | null>(null)
 
   const [form, setForm] = useState({
@@ -55,21 +56,26 @@ export default function Tasks({
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!form.title || !form.dueDate) return
-    const assigneeId = form.assignee === 'You' ? myId : profiles.find((p) => p.name === form.assignee)?.id ?? null
-    const created = await createTask(
-      {
-        title: form.title,
-        description: form.description || 'No additional details provided.',
-        assigneeId,
-        dueDate: form.dueDate,
-        priority: form.priority,
-        department: user.department,
-      },
-      myId,
-    )
-    if (created) setTasks((prev) => [created, ...prev])
-    setCreateOpen(false)
-    setForm({ title: '', description: '', assignee: 'You', dueDate: '', priority: 'Medium' })
+    setCreateError('')
+    const assigneeId = form.assignee === 'You' ? myId : form.assignee || null
+    try {
+      const created = await createTask(
+        {
+          title: form.title,
+          description: form.description || 'No additional details provided.',
+          assigneeId,
+          dueDate: form.dueDate,
+          priority: form.priority,
+          department: user.department,
+        },
+        myId,
+      )
+      setTasks((prev) => [created, ...prev])
+      setCreateOpen(false)
+      setForm({ title: '', description: '', assignee: 'You', dueDate: '', priority: 'Medium' })
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create task.')
+    }
   }
 
   const counts = {
@@ -197,6 +203,11 @@ export default function Tasks({
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create task">
         <form onSubmit={handleCreate}>
+          {createError && (
+            <p className="text-sm text-signal-red bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-4">
+              {createError}
+            </p>
+          )}
           <Field label="Title">
             <input
               className={inputClass}
@@ -222,11 +233,14 @@ export default function Tasks({
                 value={form.assignee}
                 onChange={(e) => setForm({ ...form, assignee: e.target.value })}
               >
-                <option>You</option>
-                <option>Ravi Shah</option>
-                <option>Priya Nair</option>
-                <option>Arjun Mehta</option>
-                <option>Sana Iqbal</option>
+                <option value="You">You</option>
+                {profiles
+                  .filter((p) => p.id !== myId)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
               </select>
             </Field>
             <Field label="Due date">
