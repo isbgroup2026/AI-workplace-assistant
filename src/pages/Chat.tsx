@@ -18,6 +18,7 @@ export default function Chat({ myId }: { myId: string }) {
   const [search, setSearch] = useState('')
   const [draft, setDraft] = useState('')
   const [startingChat, setStartingChat] = useState(false)
+  const [chatError, setChatError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   function refreshContacts(selectId?: string) {
@@ -63,10 +64,13 @@ export default function Chat({ myId }: { myId: string }) {
 
   async function startChatWith(otherId: string) {
     setStartingChat(true)
+    setChatError('')
     try {
       const conversationId = await getOrCreateDirectConversation(myId, otherId)
       setSearch('')
       refreshContacts(conversationId)
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : 'Failed to start chat.')
     } finally {
       setStartingChat(false)
     }
@@ -119,6 +123,11 @@ export default function Chat({ myId }: { myId: string }) {
               className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-line bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2"
             />
           </div>
+          {chatError && (
+            <p className="text-xs text-signal-red bg-red-50 border border-red-100 rounded-lg px-2.5 py-1.5 mt-2">
+              {chatError}
+            </p>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto">
           {filtered.map((c) => (
