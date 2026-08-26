@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { signIn } from '../lib/api'
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
-  const [username, setUsername] = useState('meera.kulkarni')
+  const [username, setUsername] = useState('Enter your email')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -15,7 +15,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
     }
     setError('')
     setLoading(true)
-    const email = username.includes('@') ? username : `${username}@abccorp.com`
+    const email = username.includes('@') ? username : `${username}@Innodatatics Inc..com`
     const { error: authError } = await signIn(email, password)
     setLoading(false)
     if (authError) {
@@ -42,9 +42,9 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
 
         <div className="relative flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-md bg-steel-500 flex items-center justify-center font-display font-bold">
-            A
+            I
           </div>
-          <span className="font-display font-semibold text-lg">ABCCorp</span>
+          <span className="font-display font-semibold text-lg">Innodatatics Inc.</span>
         </div>
 
         <div className="relative max-w-md">
@@ -63,7 +63,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         </div>
 
         <div className="relative flex gap-8 text-xs font-mono text-white/40">
-          <span>© 2026 ABCCorp Industries</span>
+          <span>© 2026 Innodatatics Inc. Industries</span>
           <span>Pune · Chennai · Ahmedabad</span>
         </div>
       </div>
@@ -75,12 +75,12 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
             <div className="w-8 h-8 rounded-md bg-steel-600 flex items-center justify-center font-display font-bold text-white">
               A
             </div>
-            <span className="font-display font-semibold text-lg text-ink">ABCCorp</span>
+            <span className="font-display font-semibold text-lg text-ink">Innodatatics Inc.</span>
           </div>
 
           <h2 className="font-display text-2xl font-semibold text-ink mb-1.5">Sign in</h2>
           <p className="text-sm text-inkmuted mb-8">
-            Access your workplace assistant with your ABCCorp credentials.
+            Access your workplace assistant with your Innodatatics Inc. credentials.
           </p>
 
           <form onSubmit={handleSubmit} noValidate>
@@ -131,7 +131,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
 
           <p className="text-xs text-inkmuted mt-8 text-center">
             Trouble signing in? Contact your plant IT desk at{' '}
-            <span className="font-mono">it-support@abccorp.com</span>
+            <span className="font-mono">it-support@Innodatatics Inc..com</span>
           </p>
         </div>
       </div>
