@@ -88,14 +88,16 @@ export default function Chat({ myId }: { myId: string }) {
 
   function senderLabel(senderId: string) {
     if (senderId === myId) return 'ME'
-    const c = contacts.find((x) => x.id === senderId)
-    return c ? c.initials : '??'
+    if (active && !active.isGroup && active.otherProfileId === senderId) return active.initials
+    const p = directory.find((x) => x.id === senderId)
+    return p ? p.initials : '??'
   }
 
   function senderName(senderId: string) {
     if (senderId === myId) return 'You'
-    const c = contacts.find((x) => x.id === senderId)
-    return c ? c.name : 'Unknown'
+    if (active && !active.isGroup && active.otherProfileId === senderId) return active.name
+    const p = directory.find((x) => x.id === senderId)
+    return p ? p.name : 'Unknown'
   }
 
   return (

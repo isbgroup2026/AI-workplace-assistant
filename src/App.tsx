@@ -19,7 +19,7 @@ export default function App() {
   const [checkingSession, setCheckingSession] = useState(true)
   const [profile, setProfile] = useState<DbProfile | null>(null)
   const [user, setUser] = useState<CurrentUser | null>(null)
-  const [page, setPage] = useState<Page>('home')
+  const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('abccorp_page') as Page) || 'home')
 
   const [tasks, setTasks] = useState<Task[]>([])
   const [meetings, setMeetings] = useState<Meeting[]>([])
@@ -62,6 +62,10 @@ export default function App() {
     return unsubscribe
   }, [profile])
 
+  useEffect(() => {
+    sessionStorage.setItem('abccorp_page', page)
+  }, [page])
+
   if (checkingSession) {
     return <div className="min-h-screen flex items-center justify-center bg-canvas text-inkmuted text-sm">Loading…</div>
   }
@@ -77,6 +81,7 @@ export default function App() {
     setProfile(null)
     setUser(null)
     setPage('home')
+    sessionStorage.removeItem('abccorp_page')
   }
 
   return (

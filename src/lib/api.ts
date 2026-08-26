@@ -352,22 +352,24 @@ export async function getOrCreateDirectConversation(myId: string, otherId: strin
     }
   }
 
-  const { data: newConvo, error } = await supabase
+  const newId = crypto.randomUUID()
+  const { error } = await supabase
     .from('chat_conversations')
-    .insert({ is_group: false, created_by: myId })
-    .select('id')
-    .single()
+    .insert({ id: newId, is_group: false, created_by: myId })
   if (error) throw new Error(error.message)
 
-  const { error: memberErr } = await supabase
-    .from('chat_members')
-    .insert([
-      { conversation_id: newConvo.id, user_id: myId },
-      { conversation_id: newConvo.id, user_id: otherId },
-    ])
-  if (memberErr) throw new Error(memberErr.message)
+  // Insert your own membership first — this is trivially allowed and must
+  // commit before the "conversation creator" check (used for the other
+  // person's row) can see it via chat_conversations' RLS policy.
+  const { error: selfMemberErr } = await supabase.from('chat_members').insert({ conversation_id: newId, user_id: myId })
+  if (selfMemberErr) throw new Error(selfMemberErr.message)
 
-  return newConvo.id
+  const { error: otherMemberErr } = await supabase
+    .from('chat_members')
+    .insert({ conversation_id: newId, user_id: otherId })
+  if (otherMemberErr) throw new Error(otherMemberErr.message)
+
+  return newId
 }
 
 export async function listMessages(conversationId: string): Promise<ChatMessage[]> {
