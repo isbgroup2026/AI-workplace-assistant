@@ -3,3 +3,11 @@ dist/
 .env
 .env.local
 .env.*.local
+
+# Python backend
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.mypy_cache/
+*.pyc
