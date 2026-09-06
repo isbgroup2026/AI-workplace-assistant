@@ -537,7 +537,7 @@ Deno.serve(async (req) => {
     const today = new Date().toISOString().slice(0, 10)
 
     const systemPrompt =
-      `You are the ABCCorp Workplace Assistant for a manufacturing company. The caller is ${me.name}, ` +
+      `You are the Innodatatics Inc. Workplace Assistant for a manufacturing company. The caller is ${me.name}, ` +
       `a ${me.role} in ${me.department}, employee id ${me.employee_id}. Today's date is ${today}. ` +
       `Use the provided tools to answer questions and take actions on tasks, meetings, notifications, and chat. ` +
       `Always resolve relative dates ("tomorrow", "next Tuesday") against today's date. ` +

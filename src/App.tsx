@@ -19,7 +19,7 @@ export default function App() {
   const [checkingSession, setCheckingSession] = useState(true)
   const [profile, setProfile] = useState<DbProfile | null>(null)
   const [user, setUser] = useState<CurrentUser | null>(null)
-  const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('abccorp_page') as Page) || 'home')
+  const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('Innodatatics_page') as Page) || 'home')
 
   const [tasks, setTasks] = useState<Task[]>([])
   const [meetings, setMeetings] = useState<Meeting[]>([])
@@ -63,7 +63,7 @@ export default function App() {
   }, [profile])
 
   useEffect(() => {
-    sessionStorage.setItem('abccorp_page', page)
+    sessionStorage.setItem('Innodatatics_page', page)
   }, [page])
 
   if (checkingSession) {
@@ -81,7 +81,7 @@ export default function App() {
     setProfile(null)
     setUser(null)
     setPage('home')
-    sessionStorage.removeItem('abccorp_page')
+    sessionStorage.removeItem('Innodatatics_page')
   }
 
   return (

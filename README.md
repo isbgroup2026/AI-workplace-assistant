@@ -1,4 +1,4 @@
-# ABCCorp Workplace Assistant — Frontend Prototype
+# Innodatatics Inc. Workplace Assistant — Frontend Prototype
 
 A frontend-only demo prototype of an enterprise AI Workplace Assistant for a manufacturing company. Built with React, TypeScript, Tailwind CSS, and Vite. All data is mocked/static — there is no backend, database, authentication, or real AI integration.
 

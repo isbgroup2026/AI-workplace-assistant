@@ -103,7 +103,7 @@ export default function Sidebar({
           A
         </div>
         <div className="leading-tight">
-          <p className="font-display font-semibold text-sm">ABCCorp</p>
+          <p className="font-display font-semibold text-sm">Innodatatics Inc.</p>
           <p className="text-[11px] text-white/45 tracking-wide">Workplace Assistant</p>
         </div>
       </div>
