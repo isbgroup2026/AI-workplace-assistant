@@ -468,3 +468,138 @@ export async function askAssistant(
   }
   return data?.reply ?? "Sorry, I couldn't generate a response."
 }
+
+// ---------- Analytics ----------
+
+export interface AnalyticsData {
+  kpis: { label: string; value: string; delta: string; positive: boolean }[]
+  taskCompletionTrend: { label: string; value: number }[]
+  departmentProductivity: { department: string; completion: number }[]
+  messagingActivity: { label: string; value: number }[]
+  meetingPlatformSplit: { platform: string; value: number; color: string }[]
+}
+
+function monthBounds(offsetMonths: number) {
+  const now = new Date()
+  const start = new Date(now.getFullYear(), now.getMonth() - offsetMonths, 1)
+  const end = new Date(now.getFullYear(), now.getMonth() - offsetMonths + 1, 1)
+  return { start, end, label: start.toLocaleDateString('en-US', { month: 'short' }) }
+}
+
+function inRange(dateStr: string, start: Date, end: Date) {
+  const d = new Date(dateStr)
+  return d >= start && d < end
+}
+
+function pct(done: number, total: number) {
+  return total ? Math.round((done / total) * 100) : 0
+}
+
+function formatDelta(current: number, previous: number, unit = '%') {
+  if (previous === 0 && current === 0) return 'No data yet'
+  const diff = current - previous
+  const sign = diff > 0 ? '+' : diff < 0 ? '' : '±'
+  return `${sign}${diff}${unit} vs last month`
+}
+
+export async function getAnalytics(myId: string): Promise<AnalyticsData> {
+  const [{ data: allTasks }, { data: allMeetings }, { data: aiMsgs }, { data: myChatMsgs }] = await Promise.all([
+    supabase.from('tasks').select('status, due_date, department'),
+    supabase.from('meetings').select('meeting_date, platform, status'),
+    supabase.from('ai_messages').select('created_at').eq('user_id', myId).eq('role', 'user'),
+    supabase.from('chat_messages').select('created_at').eq('sender_id', myId),
+  ])
+
+  const tasks = allTasks ?? []
+  const meetings = allMeetings ?? []
+  const aiMessages = aiMsgs ?? []
+  const chatMessages = myChatMsgs ?? []
+
+  const thisMonth = monthBounds(0)
+  const lastMonth = monthBounds(1)
+
+  // Task completion rate KPI
+  const tasksThisMonth = tasks.filter((t: any) => inRange(t.due_date, thisMonth.start, thisMonth.end))
+  const tasksLastMonth = tasks.filter((t: any) => inRange(t.due_date, lastMonth.start, lastMonth.end))
+  const completionThisMonth = pct(tasksThisMonth.filter((t: any) => t.status === 'Done').length, tasksThisMonth.length)
+  const completionLastMonth = pct(tasksLastMonth.filter((t: any) => t.status === 'Done').length, tasksLastMonth.length)
+
+  // AI interactions KPI (personal — ai_messages is owner-scoped by RLS)
+  const aiThisMonth = aiMessages.filter((m: any) => inRange(m.created_at, thisMonth.start, thisMonth.end)).length
+  const aiLastMonth = aiMessages.filter((m: any) => inRange(m.created_at, lastMonth.start, lastMonth.end)).length
+
+  // Meetings held KPI
+  const meetingsThisMonth = meetings.filter(
+    (m: any) => m.status !== 'Cancelled' && inRange(m.meeting_date, thisMonth.start, thisMonth.end),
+  ).length
+  const meetingsLastMonth = meetings.filter(
+    (m: any) => m.status !== 'Cancelled' && inRange(m.meeting_date, lastMonth.start, lastMonth.end),
+  ).length
+
+  // Messages sent KPI (personal — chat_messages is conversation-scoped by RLS)
+  const msgsThisMonth = chatMessages.filter((m: any) => inRange(m.created_at, thisMonth.start, thisMonth.end)).length
+  const msgsLastMonth = chatMessages.filter((m: any) => inRange(m.created_at, lastMonth.start, lastMonth.end)).length
+
+  const kpis = [
+    {
+      label: 'Task completion rate',
+      value: `${completionThisMonth}%`,
+      delta: formatDelta(completionThisMonth, completionLastMonth),
+      positive: completionThisMonth >= completionLastMonth,
+    },
+    {
+      label: 'Your AI interactions',
+      value: `${aiThisMonth}`,
+      delta: formatDelta(aiThisMonth, aiLastMonth, ''),
+      positive: aiThisMonth >= aiLastMonth,
+    },
+    {
+      label: 'Meetings held',
+      value: `${meetingsThisMonth}`,
+      delta: formatDelta(meetingsThisMonth, meetingsLastMonth, ''),
+      positive: meetingsThisMonth >= meetingsLastMonth,
+    },
+    {
+      label: 'Your messages sent',
+      value: `${msgsThisMonth}`,
+      delta: formatDelta(msgsThisMonth, msgsLastMonth, ''),
+      positive: msgsThisMonth >= msgsLastMonth,
+    },
+  ]
+
+  // Task completion trend, last 6 months (by due_date)
+  const taskCompletionTrend = Array.from({ length: 6 }, (_, i) => 5 - i).map((offset) => {
+    const { start, end, label } = monthBounds(offset)
+    const bucket = tasks.filter((t: any) => inRange(t.due_date, start, end))
+    return { label, value: pct(bucket.filter((t: any) => t.status === 'Done').length, bucket.length) }
+  })
+
+  // Department-wise productivity (all-time, plant-wide)
+  const departments = Array.from(new Set(tasks.map((t: any) => t.department))).filter(Boolean)
+  const departmentProductivity = departments.map((dept) => {
+    const deptTasks = tasks.filter((t: any) => t.department === dept)
+    return { department: dept as string, completion: pct(deptTasks.filter((t: any) => t.status === 'Done').length, deptTasks.length) }
+  })
+
+  // Your messaging activity, last 7 days
+  const messagingActivity = Array.from({ length: 7 }, (_, i) => 6 - i).map((offset) => {
+    const day = new Date()
+    day.setDate(day.getDate() - offset)
+    const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate())
+    const dayEnd = new Date(dayStart.getTime() + 86400000)
+    const count = chatMessages.filter((m: any) => inRange(m.created_at, dayStart, dayEnd)).length
+    return { label: dayStart.toLocaleDateString('en-US', { weekday: 'short' }), value: count }
+  })
+
+  // Meeting volume by platform (all-time, plant-wide, excluding cancelled)
+  const platformColors: Record<string, string> = { 'Google Meet': '#1E8A5F', Zoom: '#3457A6', Webex: '#D98E04' }
+  const activeMeetings = meetings.filter((m: any) => m.status !== 'Cancelled')
+  const platforms = Array.from(new Set(activeMeetings.map((m: any) => m.platform)))
+  const meetingPlatformSplit = platforms.map((platform) => ({
+    platform: platform as string,
+    value: pct(activeMeetings.filter((m: any) => m.platform === platform).length, activeMeetings.length),
+    color: platformColors[platform as string] ?? '#8FA8DA',
+  }))
+
+  return { kpis, taskCompletionTrend, departmentProductivity, messagingActivity, meetingPlatformSplit }
+}

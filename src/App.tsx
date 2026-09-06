@@ -100,7 +100,7 @@ export default function App() {
           {page === 'notifications' && (
             <Notifications myId={profile.id} notifications={notifications} setNotifications={setNotifications} />
           )}
-          {page === 'analytics' && <Analytics />}
+          {page === 'analytics' && <Analytics myId={profile.id} />}
           {page === 'settings' && <Settings user={user} setUser={setUser as React.Dispatch<React.SetStateAction<CurrentUser>>} onLogout={handleLogout} />}
         </main>
       </div>
