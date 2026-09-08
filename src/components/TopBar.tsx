@@ -7,6 +7,7 @@ const pageTitles: Record<Page, string> = {
   assistant: 'AI Assistant',
   chat: 'Chat',
   tasks: 'Tasks',
+  teamTasks: 'Team Tasks',
   meetings: 'Meetings',
   notifications: 'Notifications',
   analytics: 'Analytics',

@@ -40,9 +40,9 @@ export async function getMyProfile(): Promise<DbProfile | null> {
 }
 
 export async function listProfiles(): Promise<
-  { id: string; name: string; initials: string; role: string; department: string }[]
+  { id: string; name: string; initials: string; role: string; department: string; manager_id: string | null }[]
 > {
-  const { data, error } = await supabase.from('profiles').select('id, name, initials, role, department')
+  const { data, error } = await supabase.from('profiles').select('id, name, initials, role, department, manager_id')
   if (error) {
     console.error('listProfiles error', error)
     return []
@@ -145,7 +145,9 @@ interface MeetingRow {
   platform: MeetingPlatform
   status: Meeting['status']
   agenda: string
+  created_by: string
   updated_at: string
+  organizer?: { name: string } | null
 }
 
 function formatTime(time: string) {
@@ -155,31 +157,55 @@ function formatTime(time: string) {
   return `${hour12}:${String(m).padStart(2, '0')} ${period}`
 }
 
+function addMinutes(time: string, minutes: number) {
+  const [h, m] = time.split(':').map(Number)
+  const total = h * 60 + m + minutes
+  const endH = Math.floor((total % (24 * 60)) / 60)
+  const endM = total % 60
+  return `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`
+}
+
+async function getMeetingAttendees(meetingId: string): Promise<{ ids: string[]; names: string[] }> {
+  const { data } = await supabase.from('meeting_attendees').select('user_id, profiles(name)').eq('meeting_id', meetingId)
+  const rows = data || []
+  return {
+    ids: rows.map((r: any) => r.user_id),
+    names: rows.map((r: any) => r.profiles?.name).filter(Boolean),
+  }
+}
+
+function meetingFromRow(row: MeetingRow, attendeeIds: string[], attendeeNames: string[]): Meeting {
+  return {
+    id: row.id,
+    title: row.title,
+    date: row.meeting_date,
+    time: formatTime(row.meeting_time),
+    endTime: formatTime(addMinutes(row.meeting_time, row.duration_minutes)),
+    duration: `${row.duration_minutes} min`,
+    platform: row.platform,
+    attendees: attendeeNames,
+    attendeeIds,
+    organizerId: row.created_by,
+    organizerName: row.organizer?.name ?? 'Unknown',
+    status: row.status,
+    agenda: row.agenda ?? '',
+    updatedAt: row.updated_at,
+  }
+}
+
 export async function listMeetings(): Promise<Meeting[]> {
-  const { data: rows, error } = await supabase.from('meetings').select('*').order('meeting_date', { ascending: true })
+  const { data: rows, error } = await supabase
+    .from('meetings')
+    .select('*, organizer:created_by(name)')
+    .order('meeting_date', { ascending: true })
   if (error) {
     console.error('listMeetings error', error)
     return []
   }
   const meetings: Meeting[] = []
   for (const row of rows as MeetingRow[]) {
-    const { data: attendeeRows } = await supabase
-      .from('meeting_attendees')
-      .select('profiles(name)')
-      .eq('meeting_id', row.id)
-    const attendees = (attendeeRows || []).map((a: any) => a.profiles?.name).filter(Boolean)
-    meetings.push({
-      id: row.id,
-      title: row.title,
-      date: row.meeting_date,
-      time: formatTime(row.meeting_time),
-      duration: `${row.duration_minutes} min`,
-      platform: row.platform,
-      attendees,
-      status: row.status,
-      agenda: row.agenda ?? '',
-      updatedAt: row.updated_at,
-    })
+    const { ids, names } = await getMeetingAttendees(row.id)
+    meetings.push(meetingFromRow(row, ids, names))
   }
   return meetings
 }
@@ -200,7 +226,7 @@ export async function createMeeting(
       created_by: myId,
       status: 'Scheduled',
     })
-    .select('*')
+    .select('*, organizer:created_by(name)')
     .single()
   if (error) throw new Error(error.message)
   const row = data as MeetingRow
@@ -212,19 +238,63 @@ export async function createMeeting(
     if (attendeeErr) console.error('meeting_attendees insert error', attendeeErr)
   }
   const profiles = await listProfiles()
-  const attendees = profiles.filter((p) => attendeeIds.includes(p.id)).map((p) => p.name)
-  return {
-    id: row.id,
-    title: row.title,
-    date: row.meeting_date,
-    time: formatTime(row.meeting_time),
-    duration: `${row.duration_minutes} min`,
-    platform: row.platform,
-    attendees,
-    status: row.status,
-    agenda: row.agenda ?? '',
-    updatedAt: row.updated_at,
+  const attendeeNames = profiles.filter((p) => attendeeIds.includes(p.id)).map((p) => p.name)
+  return meetingFromRow(row, attendeeIds, attendeeNames)
+}
+
+// Full edit: updates the existing row in place (never inserts a new one) and
+// reconciles the attendee list by diffing against the current attendees.
+export async function updateMeeting(
+  id: string,
+  input: {
+    title: string
+    date: string
+    time: string
+    durationMinutes: number
+    platform: MeetingPlatform
+    agenda: string
+    attendeeIds: string[]
+  },
+  myId: string,
+): Promise<Meeting> {
+  const { data, error } = await supabase
+    .from('meetings')
+    .update({
+      title: input.title,
+      meeting_date: input.date,
+      meeting_time: input.time,
+      duration_minutes: input.durationMinutes,
+      platform: input.platform,
+      agenda: input.agenda,
+    })
+    .eq('id', id)
+    .select('*, organizer:created_by(name)')
+    .single()
+  if (error) throw new Error(error.message)
+
+  const desiredIds = new Set([...input.attendeeIds, myId])
+  const { ids: currentIds } = await getMeetingAttendees(id)
+  const toAdd = [...desiredIds].filter((uid) => !currentIds.includes(uid))
+  const toRemove = currentIds.filter((uid) => !desiredIds.has(uid))
+
+  if (toAdd.length) {
+    const { error: addErr } = await supabase
+      .from('meeting_attendees')
+      .insert(toAdd.map((user_id) => ({ meeting_id: id, user_id })))
+    if (addErr) throw new Error(addErr.message)
   }
+  if (toRemove.length) {
+    const { error: removeErr } = await supabase
+      .from('meeting_attendees')
+      .delete()
+      .eq('meeting_id', id)
+      .in('user_id', toRemove)
+    if (removeErr) throw new Error(removeErr.message)
+  }
+
+  const row = data as MeetingRow
+  const { ids, names } = await getMeetingAttendees(id)
+  return meetingFromRow(row, ids, names)
 }
 
 export async function rescheduleMeeting(id: string, date: string, time: string) {
@@ -280,6 +350,18 @@ export function subscribeToNotifications(userId: string, onChange: () => void) {
       { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
       onChange,
     )
+    .subscribe()
+  return () => { supabase.removeChannel(channel) }
+}
+
+// Generic realtime subscription for tables without a simple per-user filter
+// (e.g. tasks/meetings, where visibility is governed by RLS rather than a
+// single owner column). Any insert/update/delete triggers a full refetch,
+// which then comes back already scoped correctly by RLS.
+export function subscribeToTable(table: string, onChange: () => void) {
+  const channel = supabase
+    .channel(`table-${table}-${Math.random().toString(36).slice(2)}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table }, onChange)
     .subscribe()
   return () => { supabase.removeChannel(channel) }
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Meeting, MeetingPlatform } from '../types'
 import { Card, MeetingStatusTag, Button, Modal, Field, inputClass } from '../components/ui'
-import { listProfiles, createMeeting, rescheduleMeeting as apiReschedule, cancelMeeting as apiCancel } from '../lib/api'
+import { listProfiles, createMeeting, updateMeeting, rescheduleMeeting as apiReschedule, cancelMeeting as apiCancel } from '../lib/api'
 
 const platforms: MeetingPlatform[] = ['Google Meet', 'Zoom', 'Webex']
 
@@ -29,6 +29,18 @@ export default function Meetings({
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [scheduleError, setScheduleError] = useState('')
   const [rescheduleTarget, setRescheduleTarget] = useState<Meeting | null>(null)
+  const [editTarget, setEditTarget] = useState<Meeting | null>(null)
+  const [editError, setEditError] = useState('')
+
+  const [editForm, setEditForm] = useState({
+    title: '',
+    date: '',
+    time: '',
+    duration: '30 min',
+    platform: 'Google Meet' as MeetingPlatform,
+    attendeeIds: [] as string[],
+    agenda: '',
+  })
 
   const [form, setForm] = useState({
     title: '',
@@ -56,6 +68,63 @@ export default function Meetings({
         ? prev.attendeeIds.filter((x) => x !== id)
         : [...prev.attendeeIds, id],
     }))
+  }
+
+  function to24Hour(display: string) {
+    const [time, period] = display.split(' ')
+    let [h, m] = time.split(':').map(Number)
+    if (period === 'PM' && h !== 12) h += 12
+    if (period === 'AM' && h === 12) h = 0
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+  }
+
+  function openEdit(m: Meeting) {
+    setEditError('')
+    setEditTarget(m)
+    setEditForm({
+      title: m.title,
+      date: m.date,
+      time: to24Hour(m.time),
+      duration: m.duration,
+      platform: m.platform,
+      attendeeIds: m.attendeeIds.filter((id) => id !== myId),
+      agenda: m.agenda,
+    })
+  }
+
+  function toggleEditAttendee(id: string) {
+    setEditForm((prev) => ({
+      ...prev,
+      attendeeIds: prev.attendeeIds.includes(id)
+        ? prev.attendeeIds.filter((x) => x !== id)
+        : [...prev.attendeeIds, id],
+    }))
+  }
+
+  async function submitEdit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editTarget || !editForm.title || !editForm.date || !editForm.time) return
+    setEditError('')
+    const durationMinutes = parseInt(editForm.duration, 10) || 30
+    try {
+      const updated = await updateMeeting(
+        editTarget.id,
+        {
+          title: editForm.title,
+          date: editForm.date,
+          time: `${editForm.time}:00`,
+          durationMinutes,
+          platform: editForm.platform,
+          agenda: editForm.agenda,
+          attendeeIds: editForm.attendeeIds,
+        },
+        myId,
+      )
+      setMeetings((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+      setEditTarget(null)
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Failed to update meeting.')
+    }
   }
 
   async function handleSchedule(e: React.FormEvent) {
@@ -162,14 +231,18 @@ export default function Meetings({
                         <MeetingStatusTag status={m.status} />
                       </div>
                       <p className="text-xs text-inkmuted mt-1">{m.agenda}</p>
-                      <div className="flex items-center gap-3 mt-2 text-xs text-inkmuted font-mono">
-                        <span>{m.time} · {m.duration}</span>
+                      <div className="flex items-center gap-3 mt-2 text-xs text-inkmuted font-mono flex-wrap">
+                        <span>{m.time} – {m.endTime}</span>
                         <span>{m.platform}</span>
+                        <span>Organizer: {m.organizerId === myId ? 'You' : m.organizerName}</span>
                         <span>{m.attendees.length} attendees</span>
                       </div>
                     </div>
-                    {m.status !== 'Cancelled' && (
+                    {m.status !== 'Cancelled' && m.organizerId === myId && (
                       <div className="flex gap-2 shrink-0">
+                        <Button variant="secondary" onClick={() => openEdit(m)}>
+                          Edit
+                        </Button>
                         <Button variant="secondary" onClick={() => openReschedule(m)}>
                           Reschedule
                         </Button>
@@ -351,6 +424,104 @@ export default function Meetings({
                 Cancel
               </Button>
               <Button type="submit">Confirm reschedule</Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal open={!!editTarget} onClose={() => setEditTarget(null)} title="Edit meeting">
+        {editTarget && (
+          <form onSubmit={submitEdit}>
+            {editError && (
+              <p className="text-sm text-signal-red bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-4">
+                {editError}
+              </p>
+            )}
+            <Field label="Title">
+              <input
+                className={inputClass}
+                value={editForm.title}
+                onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                required
+              />
+            </Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Date">
+                <input
+                  type="date"
+                  className={inputClass}
+                  value={editForm.date}
+                  onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                  required
+                />
+              </Field>
+              <Field label="Time">
+                <input
+                  type="time"
+                  className={inputClass}
+                  value={editForm.time}
+                  onChange={(e) => setEditForm({ ...editForm, time: e.target.value })}
+                  required
+                />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Duration">
+                <select
+                  className={inputClass}
+                  value={editForm.duration}
+                  onChange={(e) => setEditForm({ ...editForm, duration: e.target.value })}
+                >
+                  <option>15 min</option>
+                  <option>30 min</option>
+                  <option>45 min</option>
+                  <option>60 min</option>
+                  <option>90 min</option>
+                </select>
+              </Field>
+              <Field label="Platform">
+                <select
+                  className={inputClass}
+                  value={editForm.platform}
+                  onChange={(e) => setEditForm({ ...editForm, platform: e.target.value as MeetingPlatform })}
+                >
+                  {platforms.map((p) => (
+                    <option key={p}>{p}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <Field label="Attendees">
+              <div className="border border-line rounded-lg divide-y divide-line max-h-40 overflow-y-auto">
+                {profiles
+                  .filter((p) => p.id !== myId)
+                  .map((p) => (
+                    <label key={p.id} className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
+                      <input
+                        type="checkbox"
+                        checked={editForm.attendeeIds.includes(p.id)}
+                        onChange={() => toggleEditAttendee(p.id)}
+                        className="rounded border-line"
+                      />
+                      <span className="text-ink">{p.name}</span>
+                      <span className="text-xs text-inkmuted ml-auto">{p.department}</span>
+                    </label>
+                  ))}
+              </div>
+            </Field>
+            <Field label="Agenda">
+              <textarea
+                className={inputClass}
+                rows={3}
+                value={editForm.agenda}
+                onChange={(e) => setEditForm({ ...editForm, agenda: e.target.value })}
+              />
+            </Field>
+            <div className="flex justify-end gap-2 mt-6">
+              <Button variant="secondary" onClick={() => setEditTarget(null)}>
+                Cancel
+              </Button>
+              <Button type="submit">Save changes</Button>
             </div>
           </form>
         )}

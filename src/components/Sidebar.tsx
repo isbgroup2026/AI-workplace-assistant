@@ -74,22 +74,36 @@ function IconSettings() {
   )
 }
 
+function IconTeam() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <circle cx="9" cy="8" r="3" />
+      <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" strokeLinecap="round" />
+      <circle cx="17" cy="8" r="2.5" />
+      <path d="M15.5 14.2c2.6.3 4.7 2.6 4.7 5.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export default function Sidebar({
   active,
   onNavigate,
   unreadNotifications,
   plant,
+  showTeamTasks,
 }: {
   active: Page
   onNavigate: (p: Page) => void
   unreadNotifications: number
   plant: string
+  showTeamTasks: boolean
 }) {
   const items: NavItem[] = [
     { id: 'home', label: 'Home', icon: <IconHome /> },
     { id: 'assistant', label: 'AI Assistant', icon: <IconAssistant /> },
     { id: 'chat', label: 'Chat', icon: <IconChat /> },
     { id: 'tasks', label: 'Tasks', icon: <IconTasks /> },
+    ...(showTeamTasks ? [{ id: 'teamTasks' as Page, label: 'Team Tasks', icon: <IconTeam /> }] : []),
     { id: 'meetings', label: 'Meetings', icon: <IconMeetings /> },
     { id: 'notifications', label: 'Notifications', icon: <IconBell />, badge: unreadNotifications },
     { id: 'analytics', label: 'Analytics', icon: <IconAnalytics /> },

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Page, Task, Meeting, NotificationItem, CurrentUser, DbProfile } from './types'
 import { supabase } from './lib/supabase'
-import { getMyProfile, profileToUser, listTasks, listMeetings, listNotifications, subscribeToNotifications, signOut } from './lib/api'
+import { getMyProfile, profileToUser, listTasks, listMeetings, listNotifications, subscribeToNotifications, subscribeToTable, signOut } from './lib/api'
 
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard'
 import AIAssistant from './pages/AIAssistant'
 import Chat from './pages/Chat'
 import Tasks from './pages/Tasks'
+import TeamTasks from './pages/TeamTasks'
 import Meetings from './pages/Meetings'
 import Notifications from './pages/Notifications'
 import Analytics from './pages/Analytics'
@@ -56,10 +57,24 @@ export default function App() {
 
   useEffect(() => {
     if (!profile) return
-    const unsubscribe = subscribeToNotifications(profile.id, () => {
+    const unsubNotifications = subscribeToNotifications(profile.id, () => {
       listNotifications(profile.id).then(setNotifications)
     })
-    return unsubscribe
+    const unsubTasks = subscribeToTable('tasks', () => {
+      listTasks(profile.id).then(setTasks)
+    })
+    const unsubMeetings = subscribeToTable('meetings', () => {
+      listMeetings().then(setMeetings)
+    })
+    const unsubAttendees = subscribeToTable('meeting_attendees', () => {
+      listMeetings().then(setMeetings)
+    })
+    return () => {
+      unsubNotifications()
+      unsubTasks()
+      unsubMeetings()
+      unsubAttendees()
+    }
   }, [profile])
 
   useEffect(() => {
@@ -86,7 +101,13 @@ export default function App() {
 
   return (
     <div className="flex bg-canvas min-h-screen">
-      <Sidebar active={page} onNavigate={setPage} unreadNotifications={unreadNotifications} plant={user.plant} />
+      <Sidebar
+        active={page}
+        onNavigate={setPage}
+        unreadNotifications={unreadNotifications}
+        plant={user.plant}
+        showTeamTasks={user.role === 'Manager' || user.role === 'Admin' || user.role === 'Team Lead'}
+      />
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar page={page} user={user} unreadNotifications={unreadNotifications} onNavigate={setPage} />
         <main className="flex-1 min-w-0">
@@ -96,6 +117,7 @@ export default function App() {
           {page === 'assistant' && <AIAssistant user={user} myId={profile.id} />}
           {page === 'chat' && <Chat myId={profile.id} />}
           {page === 'tasks' && <Tasks user={user} myId={profile.id} tasks={tasks} setTasks={setTasks} />}
+          {page === 'teamTasks' && <TeamTasks myId={profile.id} tasks={tasks} />}
           {page === 'meetings' && <Meetings myId={profile.id} meetings={meetings} setMeetings={setMeetings} />}
           {page === 'notifications' && (
             <Notifications myId={profile.id} notifications={notifications} setNotifications={setNotifications} />

@@ -3,6 +3,7 @@ export type Page =
   | 'assistant'
   | 'chat'
   | 'tasks'
+  | 'teamTasks'
   | 'meetings'
   | 'notifications'
   | 'analytics'
@@ -20,6 +21,7 @@ export interface DbProfile {
   language: 'English' | 'Hindi' | 'Telugu'
   email: string
   plant: string
+  manager_id?: string | null
 }
 
 export interface CurrentUser {
@@ -58,9 +60,13 @@ export interface Meeting {
   title: string
   date: string
   time: string
+  endTime: string
   duration: string
   platform: MeetingPlatform
   attendees: string[]
+  attendeeIds: string[]
+  organizerId: string
+  organizerName: string
   status: MeetingStatus
   agenda: string
   updatedAt: string
