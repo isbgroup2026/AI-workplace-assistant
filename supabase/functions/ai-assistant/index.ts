@@ -1,5 +1,5 @@
 // Supabase Edge Function: ai-assistant
-// Real AI Assistant backed by Grok (xAI), with function-calling over your
+// Real AI Assistant backed by Groq (fast open-model inference), with function-calling over your
 // actual tasks / meetings / notifications / chat tables. All queries run as
 // the calling user (their JWT is forwarded), so existing RLS policies apply
 // automatically — this function never bypasses your row-level security.
@@ -7,20 +7,84 @@
 // Deploy:
 //   supabase functions deploy ai-assistant
 // Set the secret (once):
-//   supabase secrets set GROK_API_KEY=your_key_here
+//   supabase secrets set GROQ_API_KEY=your_key_here
 //
 // Called from the frontend via:
 //   supabase.functions.invoke('ai-assistant', { body: { messages, language } })
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 
-const corsHeaders: Record<string, string> = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type',
+// Injected globally by the Supabase Edge Runtime — provides on-device ML
+// models (no external API/secret needed). Used only for policy-search
+// embeddings; isolated here so the provider can be swapped later without
+// touching anything else in this file.
+declare const Supabase: any
+
+async function generateEmbedding(text: string): Promise<number[]> {
+  const model = new Supabase.ai.Session('gte-small')
+  const embedding = await model.run(text, { mean_pool: true, normalize: true })
+  return embedding as number[]
 }
 
-// ---------- Tool schema (OpenAI-style function calling, xAI is compatible) ----------
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
+const GROQ_MODEL = 'qwen/qwen3.6-27b'
+const MAX_GROQ_RETRIES = 3
+const GROQ_TIMEOUT_MS = 20000
+const MAX_ITERATIONS = 5
+const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504])
+
+// ---------- Logging (never logs API keys / tokens / JWTs / user PII) ----------
+
+function log(requestId: string, message: string, extra?: unknown) {
+  if (extra !== undefined) console.log(`[${requestId}] ${message}`, extra)
+  else console.log(`[${requestId}] ${message}`)
+}
+
+function logError(requestId: string, message: string, extra?: unknown) {
+  if (extra !== undefined) console.error(`[${requestId}] ${message}`, extra)
+  else console.error(`[${requestId}] ${message}`)
+}
+
+function jsonResponse(body: Record<string, unknown>, status: number, requestId: string) {
+  return new Response(JSON.stringify({ ...body, requestId }), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
+function friendlyMessageFor(code: string): string {
+  switch (code) {
+    case 'AUTH_ERROR':
+      return 'Your session seems to have expired — please sign in again.'
+    case 'PROFILE_ERROR':
+      return "I couldn't find your employee profile — please contact your admin."
+    case 'GROQ_NETWORK_ERROR':
+    case 'GROQ_TIMEOUT':
+      return "I'm having trouble reaching the AI service right now — please try again in a moment."
+    case 'GROQ_RATE_LIMIT':
+      return 'The assistant is a bit busy right now — please try again in a few seconds.'
+    case 'GROQ_API_ERROR':
+      return 'Something went wrong on the AI service side — please try again.'
+    case 'INVALID_AI_RESPONSE':
+    case 'EMPTY_AI_RESPONSE':
+      return "I didn't get a clear answer that time — could you try rephrasing your request?"
+    case 'MAX_TOOL_ITERATIONS':
+      return "I wasn't able to finish that request — could you rephrase it or break it into smaller steps?"
+    case 'CONFIG_ERROR':
+      return 'The assistant is not fully configured yet. Please contact your admin.'
+    case 'INVALID_REQUEST':
+      return "Sorry, that request didn't come through correctly. Please try again."
+    default:
+      return 'Sorry, something went wrong. Please try again.'
+  }
+}
+
+// ---------- Tool schema (OpenAI-style function calling; Groq is compatible) ----------
 
 const tools = [
   {
@@ -147,13 +211,38 @@ const tools = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'search_policy',
+      description:
+        'Search approved organizational policy documents (HR, Finance, IT, Admin, Plant Operations — e.g. leave, WFH, expenses, security, safety, conduct) for the answer to a policy question. Only use for genuine policy questions, never for tasks/meetings/notifications/chat.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The policy question or topic to search for.' },
+          department: { type: 'string', enum: ['HR', 'Finance', 'IT', 'Admin', 'Plant Operations'] },
+          policy_type: { type: 'string', description: 'Optional narrower category, e.g. Leave, WFH, Travel, Security, Safety.' },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ]
 
 // ---------- Tool execution (all queries run as the calling user; RLS applies) ----------
+// Business logic for every tool is unchanged from the existing implementation.
+// Only defensive null/array handling was added — no tool's behavior changed.
 
 async function findProfileByName(supabase: any, name: string) {
-  const { data } = await supabase.from('profiles').select('id, name, initials').ilike('name', `%${name}%`).limit(1).maybeSingle()
-  return data
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, name, initials')
+    .ilike('name', `%${name}%`)
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(error.message)
+  return data ?? null
 }
 
 async function getOrCreateDirectConversation(supabase: any, myId: string, otherId: string): Promise<string> {
@@ -197,7 +286,7 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
       if (args.overdue_only) q = q.lt('due_date', new Date().toISOString().slice(0, 10)).neq('status', 'Done')
       const { data, error } = await q.order('due_date', { ascending: true })
       if (error) return { error: error.message }
-      return { tasks: data }
+      return { tasks: data ?? [] }
     }
 
     case 'create_task': {
@@ -221,6 +310,7 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
         .select('title, due_date, priority, status')
         .single()
       if (error) return { error: error.message }
+      if (!data) return { error: 'Task was not created.' }
       return { created: data }
     }
 
@@ -240,7 +330,11 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
     }
 
     case 'list_meetings': {
-      const { data: attendeeRows } = await supabase.from('meeting_attendees').select('meeting_id').eq('user_id', me.id)
+      const { data: attendeeRows, error: attendeeErr } = await supabase
+        .from('meeting_attendees')
+        .select('meeting_id')
+        .eq('user_id', me.id)
+      if (attendeeErr) return { error: attendeeErr.message }
       const meetingIds = (attendeeRows || []).map((r: any) => r.meeting_id)
       if (!meetingIds.length) return { meetings: [] }
       let q = supabase
@@ -255,7 +349,7 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
       }
       const { data, error } = await q.order('meeting_date', { ascending: true })
       if (error) return { error: error.message }
-      return { meetings: data }
+      return { meetings: data ?? [] }
     }
 
     case 'create_meeting': {
@@ -279,7 +373,12 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
         if (p) attendeeIds.add(p.id)
       }
       for (const id of attendeeIds) {
-        await supabase.from('meeting_attendees').insert({ meeting_id: newId, user_id: id })
+        const { error: attendeeErr } = await supabase.from('meeting_attendees').insert({ meeting_id: newId, user_id: id })
+        if (attendeeErr) {
+          // Meeting row already exists at this point; surface the attendee
+          // failure but don't roll back — the meeting itself did get created.
+          return { error: `Meeting created, but adding an attendee failed: ${attendeeErr.message}` }
+        }
       }
       return { created: args.title, date: args.date, time: args.time, attendees: attendeeIds.size }
     }
@@ -289,19 +388,21 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
       if (args.unread_only !== false) q = q.eq('read', false)
       const { data, error } = await q.order('created_at', { ascending: false }).limit(10)
       if (error) return { error: error.message }
-      return { notifications: data }
+      return { notifications: data ?? [] }
     }
 
     case 'mark_notification_read': {
-      const { data: match } = await supabase
+      const { data: match, error: findErr } = await supabase
         .from('notifications')
         .select('id, title')
         .eq('user_id', me.id)
         .ilike('title', `%${args.title_snippet}%`)
         .limit(1)
         .maybeSingle()
+      if (findErr) return { error: findErr.message }
       if (!match) return { error: `No notification found matching "${args.title_snippet}".` }
-      await supabase.from('notifications').update({ read: true }).eq('id', match.id)
+      const { error } = await supabase.from('notifications').update({ read: true }).eq('id', match.id)
+      if (error) return { error: error.message }
       return { marked_read: match.title }
     }
 
@@ -319,14 +420,54 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
     case 'task_summary': {
       const { data, error } = await supabase.from('tasks').select('status, due_date').eq('assignee_id', me.id)
       if (error) return { error: error.message }
+      const rows = data ?? []
       const today = new Date().toISOString().slice(0, 10)
       const summary = {
-        pending: data.filter((t: any) => t.status === 'Pending').length,
-        in_progress: data.filter((t: any) => t.status === 'In Progress').length,
-        done: data.filter((t: any) => t.status === 'Done').length,
-        overdue: data.filter((t: any) => t.status !== 'Done' && t.due_date < today).length,
+        pending: rows.filter((t: any) => t.status === 'Pending').length,
+        in_progress: rows.filter((t: any) => t.status === 'In Progress').length,
+        done: rows.filter((t: any) => t.status === 'Done').length,
+        overdue: rows.filter((t: any) => t.status !== 'Done' && t.due_date < today).length,
       }
       return { summary }
+    }
+
+    case 'search_policy': {
+      if (!args.query || typeof args.query !== 'string' || !args.query.trim()) {
+        return { error: 'A search query is required to look up policy information.' }
+      }
+
+      let queryEmbedding: number[]
+      try {
+        queryEmbedding = await generateEmbedding(args.query)
+      } catch (embedErr) {
+        return { error: `Policy search is temporarily unavailable: ${String(embedErr)}` }
+      }
+
+      const { data, error } = await supabase.rpc('match_policy_chunks', {
+        query_embedding: queryEmbedding,
+        match_count: 5,
+        filter_department: args.department ?? null,
+        filter_policy_type: args.policy_type ?? null,
+      })
+      if (error) return { error: error.message }
+
+      const rows = data ?? []
+      if (rows.length === 0) {
+        return {
+          results: [],
+          note: 'No matching active policy content was found for this question.',
+        }
+      }
+
+      return {
+        results: rows.map((r: any) => ({
+          policy_title: r.title,
+          version: r.version,
+          section: r.section_name,
+          page: r.page_number,
+          text: r.chunk_text,
+        })),
+      }
     }
 
     default:
@@ -334,545 +475,261 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
   }
 }
 
-// ---------- Main handler ----------
+// Wraps executeTool so a THROWN error (e.g. from getOrCreateDirectConversation,
+// or findProfileByName's own Supabase error) can never crash the whole request —
+// it always becomes a structured tool result the model can react to in plain
+// language, instead of a 500 that kills the entire assistant turn.
+async function safeExecuteTool(supabase: any, me: any, name: string, args: any, requestId: string): Promise<any> {
+  log(requestId, `TOOL_CALL ${name}`)
+  try {
+    const result = await executeTool(supabase, me, name, args)
+    if (result && typeof result === 'object' && 'error' in result) {
+      logError(requestId, `TOOL_FAILURE ${name}`, result.error)
+      return { success: false, error: 'TOOL_EXECUTION_FAILED', message: String(result.error) }
+    }
+    log(requestId, `TOOL_SUCCESS ${name}`)
+    return { success: true, ...result }
+  } catch (err) {
+    logError(requestId, `TOOL_FAILURE ${name}`, String(err))
+    return { success: false, error: 'TOOL_EXECUTION_FAILED', message: `Unable to complete "${name}".` }
+  }
+}
+
+// ---------- Reusable Groq request function with retry + timeout ----------
+
+interface GroqResult {
+  ok: boolean
+  data?: any
+  status?: number
+  errorCode?: string
+  errorMessage?: string
+}
+
+async function callGroq(apiKey: string, body: unknown, requestId: string): Promise<GroqResult> {
+  let last: { errorCode: string; errorMessage: string; status?: number } | null = null
+
+  for (let attempt = 1; attempt <= MAX_GROQ_RETRIES; attempt++) {
+    if (attempt > 1) {
+      const delay = attempt === 2 ? 500 : 1000
+      log(requestId, `GROQ_RETRY_DELAY_${delay}MS`)
+      await new Promise((r) => setTimeout(r, delay))
+    }
+    log(requestId, `GROQ_ATTEMPT_${attempt}`)
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(GROQ_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      log(requestId, `GROQ_STATUS_${response.status}`)
+
+      let data: any
+      try {
+        data = await response.json()
+      } catch (parseErr) {
+        last = { errorCode: 'GROQ_API_ERROR', errorMessage: 'Groq returned a non-JSON response', status: response.status }
+        logError(requestId, 'GROQ_RESPONSE_PARSE_FAILED', String(parseErr))
+        if (RETRYABLE_STATUS.has(response.status) && attempt < MAX_GROQ_RETRIES) continue
+        return { ok: false, status: response.status, errorCode: last.errorCode, errorMessage: last.errorMessage }
+      }
+
+      if (response.ok) {
+        return { ok: true, status: response.status, data }
+      }
+
+      const isRateLimit = response.status === 429
+      const errorCode = isRateLimit ? 'GROQ_RATE_LIMIT' : 'GROQ_API_ERROR'
+      const errorMessage = typeof data === 'object' ? JSON.stringify(data).slice(0, 500) : String(data)
+      last = { errorCode, errorMessage, status: response.status }
+
+      if (RETRYABLE_STATUS.has(response.status) && attempt < MAX_GROQ_RETRIES) {
+        log(requestId, `GROQ_RETRYABLE_ERROR_${response.status}`)
+        continue
+      }
+      // Not retryable (400/401/403/404/etc.) or out of attempts — stop now.
+      return { ok: false, status: response.status, errorCode, errorMessage }
+    } catch (err) {
+      clearTimeout(timeoutId)
+      const isAbort = err instanceof Error && err.name === 'AbortError'
+      const errorCode = isAbort ? 'GROQ_TIMEOUT' : 'GROQ_NETWORK_ERROR'
+      last = { errorCode, errorMessage: String(err) }
+      logError(requestId, `${errorCode}_ATTEMPT_${attempt}`, String(err))
+      if (attempt < MAX_GROQ_RETRIES) continue
+      return { ok: false, errorCode, errorMessage: last.errorMessage }
+    }
+  }
+
+  return {
+    ok: false,
+    errorCode: last?.errorCode ?? 'GROQ_NETWORK_ERROR',
+    errorMessage: last?.errorMessage ?? 'Unknown error after retries',
+  }
+}
+
+// Validates the full chain before anything touches .content / .tool_calls.
+function validateGroqData(data: any): { valid: boolean; message?: any } {
+  if (!data || !Array.isArray(data.choices) || data.choices.length === 0) return { valid: false }
+  const choice = data.choices[0]
+  if (!choice || typeof choice !== 'object' || !choice.message) return { valid: false }
+  return { valid: true, message: choice.message }
+}
 
 // ---------- Main handler ----------
 
 Deno.serve(async (req) => {
   const requestId = crypto.randomUUID()
 
-  console.log('========================================')
-  console.log('AI ASSISTANT REQUEST RECEIVED')
-  console.log('REQUEST ID:', requestId)
-  console.log('========================================')
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+
+  log(requestId, 'REQUEST_RECEIVED')
 
   try {
-    // --------------------------------------------------
-    // 1. Request received
-    // --------------------------------------------------
-    console.log('STEP 1: Request received')
-    console.log('METHOD:', req.method)
-    console.log('URL:', req.url)
-
-    if (req.method === 'OPTIONS') {
-      console.log('OPTIONS request received')
-      return new Response('ok', { headers: corsHeaders })
+    let messages: any[]
+    let language: string | undefined
+    try {
+      const body = await req.json()
+      messages = Array.isArray(body?.messages) ? body.messages : []
+      language = body?.language
+      log(requestId, 'REQUEST_BODY_PARSED')
+    } catch (err) {
+      logError(requestId, 'REQUEST_BODY_PARSE_FAILED', String(err))
+      return jsonResponse({ error: 'INVALID_REQUEST', reply: friendlyMessageFor('INVALID_REQUEST') }, 200, requestId)
     }
-
-    // --------------------------------------------------
-    // 2. Request body parsed
-    // --------------------------------------------------
-    console.log('STEP 2: Parsing request body')
-
-    const { messages, language } = await req.json()
-
-    console.log('STEP 2: Request body parsed successfully')
-    console.log(
-      'MESSAGE COUNT:',
-      Array.isArray(messages) ? messages.length : 'INVALID'
-    )
-    console.log('LANGUAGE:', language || 'English')
-
-    // --------------------------------------------------
-    // 3. API key exists
-    // --------------------------------------------------
-    console.log('STEP 3: Checking GROQ_API_KEY')
 
     const apiKey = Deno.env.get('GROQ_API_KEY')
-
-    console.log('API KEY EXISTS:', !!apiKey)
-    console.log('API KEY LENGTH:', apiKey ? apiKey.length : 0)
-
-    // NEVER log the actual API key.
-
     if (!apiKey) {
-      console.error('STEP 3 ERROR: GROQ_API_KEY not configured')
-
-      return new Response(
-        JSON.stringify({
-          error: 'GROQ_API_KEY not configured',
-        }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-          },
-        }
-      )
+      logError(requestId, 'MISSING_GROQ_API_KEY')
+      return jsonResponse({ error: 'CONFIG_ERROR', reply: friendlyMessageFor('CONFIG_ERROR') }, 200, requestId)
     }
 
-    console.log('STEP 3: API key exists')
-
-    // --------------------------------------------------
-    // 4. Authorization header exists
-    // --------------------------------------------------
-    console.log('STEP 4: Checking Authorization header')
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')
+    if (!supabaseUrl || !supabaseAnonKey) {
+      logError(requestId, 'MISSING_SUPABASE_ENV')
+      return jsonResponse({ error: 'CONFIG_ERROR', reply: friendlyMessageFor('CONFIG_ERROR') }, 200, requestId)
+    }
 
     const authHeader = req.headers.get('Authorization') ?? ''
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, { global: { headers: { Authorization: authHeader } } })
 
-    console.log('AUTHORIZATION HEADER EXISTS:', !!authHeader)
-
-    if (!authHeader) {
-      console.error('STEP 4 ERROR: Authorization header missing')
-
-      return new Response(
-        JSON.stringify({
-          error: 'Authorization header missing',
-        }),
-        {
-          status: 401,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-          },
-        }
-      )
-    }
-
-    console.log('STEP 4: Authorization header exists')
-
-    // --------------------------------------------------
-    // Supabase client
-    // --------------------------------------------------
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!
-
-    console.log('SUPABASE URL EXISTS:', !!supabaseUrl)
-    console.log('SUPABASE ANON KEY EXISTS:', !!supabaseAnonKey)
-
-    const supabase = createClient(
-      supabaseUrl,
-      supabaseAnonKey,
-      {
-        global: {
-          headers: {
-            Authorization: authHeader,
-          },
-        },
+    let userId: string
+    try {
+      const { data, error } = await supabase.auth.getUser()
+      if (error || !data?.user) {
+        logError(requestId, 'AUTH_FAILURE', error?.message)
+        return jsonResponse({ error: 'AUTH_ERROR', reply: friendlyMessageFor('AUTH_ERROR') }, 200, requestId)
       }
-    )
-
-    // --------------------------------------------------
-    // 5. User authentication
-    // --------------------------------------------------
-    console.log('STEP 5: Authenticating user')
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-
-    console.log('AUTH USER EXISTS:', !!user)
-    console.log(
-      'AUTH ERROR:',
-      authError ? authError.message : 'NONE'
-    )
-
-    if (!user) {
-      console.error('STEP 5 ERROR: User authentication failed')
-
-      return new Response(
-        JSON.stringify({
-          error: 'Not authenticated',
-        }),
-        {
-          status: 401,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-          },
-        }
-      )
+      userId = data.user.id
+      log(requestId, 'AUTH_SUCCESS')
+    } catch (err) {
+      logError(requestId, 'AUTH_FAILURE', String(err))
+      return jsonResponse({ error: 'AUTH_ERROR', reply: friendlyMessageFor('AUTH_ERROR') }, 200, requestId)
     }
 
-    console.log('STEP 5: User authentication successful')
-    console.log('USER ID:', user.id)
-
-    // --------------------------------------------------
-    // 6. Profile lookup
-    // --------------------------------------------------
-    console.log('STEP 6: Looking up profile')
-
-    const {
-      data: me,
-      error: profileError,
-    } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single()
-
-    console.log('PROFILE FOUND:', !!me)
-    console.log(
-      'PROFILE ERROR:',
-      profileError ? profileError.message : 'NONE'
-    )
-
-    if (!me) {
-      console.error('STEP 6 ERROR: Profile not found')
-
-      return new Response(
-        JSON.stringify({
-          error: 'Profile not found',
-        }),
-        {
-          status: 404,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-          },
-        }
-      )
+    let me: any
+    try {
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single()
+      if (error || !data) {
+        logError(requestId, 'PROFILE_FAILURE', error?.message)
+        return jsonResponse({ error: 'PROFILE_ERROR', reply: friendlyMessageFor('PROFILE_ERROR') }, 200, requestId)
+      }
+      me = data
+      log(requestId, 'PROFILE_SUCCESS')
+    } catch (err) {
+      logError(requestId, 'PROFILE_FAILURE', String(err))
+      return jsonResponse({ error: 'PROFILE_ERROR', reply: friendlyMessageFor('PROFILE_ERROR') }, 200, requestId)
     }
 
-    console.log('STEP 6: Profile lookup successful')
-    console.log('PROFILE NAME:', me.name)
-    console.log('PROFILE ROLE:', me.role)
-    console.log('PROFILE DEPARTMENT:', me.department)
-
-    // --------------------------------------------------
-    // System prompt
-    // --------------------------------------------------
     const today = new Date().toISOString().slice(0, 10)
-
     const systemPrompt =
-      `You are the Innodatatics Inc. Workplace Assistant for a manufacturing company. The caller is ${me.name}, ` +
+      `You are the ABCCorp Workplace Assistant for a manufacturing company. The caller is ${me.name}, ` +
       `a ${me.role} in ${me.department}, employee id ${me.employee_id}. Today's date is ${today}. ` +
       `Use the provided tools to answer questions and take actions on tasks, meetings, notifications, and chat. ` +
       `Always resolve relative dates ("tomorrow", "next Tuesday") against today's date. ` +
       `If required details are missing (e.g. no due date, no time), ask a concise follow-up question instead of guessing. ` +
-      `Keep replies short and practical. Respond in ${language || 'English'}.`
+      `Keep replies short and practical. Respond in ${language || 'English'}.\n\n` +
+      `POLICY RULES: For genuine organizational-policy questions (HR, Finance, IT, Admin, or Plant Operations — ` +
+      `e.g. leave, WFH, expenses, security, safety, conduct), call search_policy before answering; never rely on ` +
+      `general knowledge for these. Answer ONLY from what search_policy returns, and mention the policy title ` +
+      `and section (and page, if given) — e.g. "Source: Leave Policy v3.2 — Section 3.2". If the results don't ` +
+      `cover the question, say plainly that the available policies don't specify this and suggest contacting the ` +
+      `relevant department — never guess or invent a rule. If multiple results conflict, tell the user there may ` +
+      `be a policy conflict rather than picking one yourself. If asked for the caller's own personal balance/usage ` +
+      `(e.g. "how many leaves do I have left"), state you cannot access their personal balance, then share the ` +
+      `general policy rule if relevant. Never mention tool names, database details, similarity scores, or other ` +
+      `internal implementation details. Do not call search_policy for task, meeting, notification, or chat requests.`
 
-    let convo: any[] = [
-      {
-        role: 'system',
-        content: systemPrompt,
-      },
-      ...messages,
-    ]
+    let convo: any[] = [{ role: 'system', content: systemPrompt }, ...messages]
+    let lastFailureCode: string | null = null
 
-    console.log('SYSTEM PROMPT CREATED')
-    console.log('CONVERSATION MESSAGE COUNT:', convo.length)
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const groqResult = await callGroq(apiKey, { model: GROQ_MODEL, messages: convo, tools, max_tokens: 600 }, requestId)
 
-    // --------------------------------------------------
-    // 7. Groq / AI request
-    // --------------------------------------------------
-    console.log('STEP 7: Starting AI conversation')
-
-    for (let i = 0; i < 5; i++) {
-      console.log('----------------------------------------')
-      console.log(`AI ITERATION: ${i + 1}`)
-      console.log('----------------------------------------')
-
-      console.log('STEP 7: Groq request')
-      console.log('PROVIDER: Groq')
-      console.log('MODEL: llama-3.3-70b-versatile')
-      console.log(
-        'ENDPOINT: https://api.groq.com/openai/v1/chat/completions'
-      )
-      console.log(
-        'CONVERSATION MESSAGE COUNT:',
-        convo.length
-      )
-      console.log('TOOLS AVAILABLE:', tools.length)
-
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'qwen/qwen3.6-27b',
-            messages: convo,
-            tools,
-            max_tokens: 600,
-          }),
-        }
-      )
-
-      console.log('STEP 7: Groq request completed')
-
-      // --------------------------------------------------
-      // 8. Groq status
-      // --------------------------------------------------
-      console.log('STEP 8: Groq HTTP STATUS:', response.status)
-      console.log(
-        'STEP 8: Groq STATUS TEXT:',
-        response.statusText
-      )
-      console.log('STEP 8: Groq RESPONSE OK:', response.ok)
-
-      const rawResponse = await response.text()
-
-      // --------------------------------------------------
-      // 9. Exact Groq response
-      // --------------------------------------------------
-      console.log('STEP 9: EXACT GROQ RESPONSE:')
-      console.log(rawResponse)
-
-      let data: any
-
-      try {
-        data = JSON.parse(rawResponse)
-      } catch (jsonError) {
-        console.error('STEP 9 ERROR: Groq response is not JSON')
-        console.error('JSON ERROR:', String(jsonError))
-
-        return new Response(
-          JSON.stringify({
-            error: 'Invalid response from Groq',
-          }),
-          {
-            status: 502,
-            headers: {
-              ...corsHeaders,
-              'Content-Type': 'application/json',
-            },
-          }
+      if (!groqResult.ok) {
+        logError(requestId, 'REQUEST_FAILURE', `${groqResult.errorCode}: ${groqResult.errorMessage}`)
+        return jsonResponse(
+          { error: groqResult.errorCode, reply: friendlyMessageFor(groqResult.errorCode ?? 'GROQ_API_ERROR') },
+          200,
+          requestId,
         )
       }
 
-      // --------------------------------------------------
-      // Exact AI error response
-      // --------------------------------------------------
-      if (!response.ok) {
-        console.error('========================================')
-        console.error('GROQ API ERROR')
-        console.error('REQUEST ID:', requestId)
-        console.error('HTTP STATUS:', response.status)
-        console.error('STATUS TEXT:', response.statusText)
-        console.error('EXACT GROQ ERROR RESPONSE:')
-        console.error(JSON.stringify(data))
-        console.error('========================================')
-
-        return new Response(
-          JSON.stringify({
-            error: data,
-          }),
-          {
-            status: response.status,
-            headers: {
-              ...corsHeaders,
-              'Content-Type': 'application/json',
-            },
-          }
+      const validated = validateGroqData(groqResult.data)
+      if (!validated.valid) {
+        logError(requestId, 'INVALID_AI_RESPONSE', JSON.stringify(groqResult.data)?.slice(0, 500))
+        return jsonResponse(
+          { error: 'INVALID_AI_RESPONSE', reply: friendlyMessageFor('INVALID_AI_RESPONSE') },
+          200,
+          requestId,
         )
       }
 
-      // --------------------------------------------------
-      // Validate response
-      // --------------------------------------------------
-      if (!data?.choices?.[0]?.message) {
-        console.error('INVALID GROQ RESPONSE STRUCTURE')
-        console.error(
-          'FULL GROQ RESPONSE:',
-          JSON.stringify(data)
-        )
+      const msg = validated.message
 
-        return new Response(
-          JSON.stringify({
-            error: 'Invalid Groq response structure',
-          }),
-          {
-            status: 502,
-            headers: {
-              ...corsHeaders,
-              'Content-Type': 'application/json',
-            },
-          }
-        )
-      }
-
-      const msg = data.choices[0].message
-
-      console.log('AI MESSAGE RECEIVED')
-      console.log('MESSAGE ROLE:', msg.role)
-      console.log(
-        'MESSAGE CONTENT EXISTS:',
-        !!msg.content
-      )
-      console.log(
-        'TOOL CALL COUNT:',
-        msg.tool_calls?.length || 0
-      )
-
-      // --------------------------------------------------
-      // 10. Tool calls
-      // --------------------------------------------------
-      if (msg.tool_calls?.length) {
-        console.log('========================================')
-        console.log('STEP 10: TOOL CALLS DETECTED')
-        console.log('TOOL CALL COUNT:', msg.tool_calls.length)
-        console.log('========================================')
-
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
         convo.push(msg)
-
         for (const call of msg.tool_calls) {
-          console.log('----------------------------------------')
-          console.log('TOOL CALL')
-          console.log('TOOL ID:', call.id)
-          console.log('TOOL NAME:', call.function?.name)
-
           let args: any = {}
-
           try {
-            args = JSON.parse(
-              call.function?.arguments || '{}'
-            )
-
-            console.log(
-              'TOOL ARGUMENTS:',
-              JSON.stringify(args)
-            )
-          } catch (parseError) {
-            console.error('TOOL ARGUMENT PARSE ERROR')
-            console.error(
-              'RAW ARGUMENTS:',
-              call.function?.arguments
-            )
-            console.error(
-              'PARSE ERROR:',
-              String(parseError)
-            )
+            args = call?.function?.arguments ? JSON.parse(call.function.arguments) : {}
+          } catch (err) {
+            logError(requestId, `TOOL_ARGS_PARSE_FAILED ${call?.function?.name}`, String(err))
           }
-
-          // --------------------------------------------------
-          // 11. Tool execution
-          // --------------------------------------------------
-          console.log('STEP 11: Executing tool')
-          console.log(
-            'TOOL:',
-            call.function?.name
-          )
-
-          try {
-            const result = await executeTool(
-              supabase,
-              me,
-              call.function.name,
-              args
-            )
-
-            console.log('TOOL EXECUTION COMPLETED')
-            console.log(
-              'TOOL RESULT:',
-              JSON.stringify(result)
-            )
-
-            if (result?.error) {
-              console.error(
-                'TOOL EXECUTION ERROR:',
-                result.error
-              )
-            }
-
-            convo.push({
-              role: 'tool',
-              tool_call_id: call.id,
-              content: JSON.stringify(result),
-            })
-          } catch (toolError) {
-            console.error('========================================')
-            console.error('TOOL EXECUTION EXCEPTION')
-            console.error(
-              'TOOL:',
-              call.function?.name
-            )
-            console.error(
-              'ERROR:',
-              String(toolError)
-            )
-            console.error(
-              'STACK:',
-              toolError?.stack
-            )
-            console.error('========================================')
-
-            convo.push({
-              role: 'tool',
-              tool_call_id: call.id,
-              content: JSON.stringify({
-                error: String(toolError),
-              }),
-            })
-          }
+          const result = await safeExecuteTool(supabase, me, call?.function?.name, args, requestId)
+          convo.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
         }
-
-        console.log('TOOL PROCESSING COMPLETE')
-        console.log('CONTINUING AI CONVERSATION')
-
         continue
       }
 
-      // --------------------------------------------------
-      // 12. Final response
-      // --------------------------------------------------
-      console.log('========================================')
-      console.log('STEP 12: FINAL RESPONSE')
-      console.log('REQUEST ID:', requestId)
-      console.log('FINAL RESPONSE:')
-      console.log(msg.content)
-      console.log('========================================')
+      // Final turn — no more tool calls.
+      const content = typeof msg.content === 'string' ? msg.content.trim() : ''
+      if (content.length > 0) {
+        log(requestId, `FINAL_RESPONSE_LENGTH ${content.length}`)
+        log(requestId, 'REQUEST_SUCCESS')
+        return jsonResponse({ reply: content }, 200, requestId)
+      }
 
-      return new Response(
-        JSON.stringify({
-          reply: msg.content,
-        }),
-        {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-          },
-        }
-      )
+      // Empty content on a final turn — this is the "blank response" bug.
+      // Nudge the model once more (bounded by the same MAX_ITERATIONS budget)
+      // instead of ever shipping "" to the frontend.
+      lastFailureCode = 'EMPTY_AI_RESPONSE'
+      logError(requestId, 'EMPTY_AI_RESPONSE_RETRY', `iteration=${i}`)
+      convo.push({ role: 'user', content: 'Please provide a short confirmation or answer in plain text.' })
     }
 
-    // --------------------------------------------------
-    // Maximum iterations
-    // --------------------------------------------------
-    console.error(
-      'MAXIMUM AI ITERATIONS REACHED'
-    )
-
-    return new Response(
-      JSON.stringify({
-        reply:
-          "I wasn't able to finish that request — could you rephrase it?",
-      }),
-      {
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json',
-        },
-      }
-    )
-
+    const finalCode = lastFailureCode ?? 'MAX_TOOL_ITERATIONS'
+    logError(requestId, finalCode)
+    return jsonResponse({ error: finalCode, reply: friendlyMessageFor(finalCode) }, 200, requestId)
   } catch (err) {
-    // --------------------------------------------------
-    // 13. Unexpected errors
-    // --------------------------------------------------
-    console.error('========================================')
-    console.error('UNEXPECTED ERROR')
-    console.error('REQUEST ID:', requestId)
-    console.error('ERROR:', String(err))
-    console.error('STACK:', err?.stack)
-    console.error('========================================')
-
-    return new Response(
-      JSON.stringify({
-        error: String(err),
-      }),
-      {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json',
-        },
-      }
-    )
+    // Last-resort safety net — should rarely, if ever, be reached given the
+    // validation above, but guarantees the frontend never sees a raw crash.
+    logError(requestId, 'UNHANDLED_EXCEPTION', String(err))
+    return jsonResponse({ error: 'UNHANDLED_EXCEPTION', reply: friendlyMessageFor('DEFAULT') }, 200, requestId)
   }
 })
