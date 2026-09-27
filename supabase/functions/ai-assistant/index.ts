@@ -654,7 +654,7 @@ Deno.serve(async (req) => {
       `Always resolve relative dates ("tomorrow", "next Tuesday") against today's date. ` +
       `If required details are missing (e.g. no due date, no time), ask a concise follow-up question instead of guessing. ` +
       `Keep replies short and practical. Respond in ${language || 'English'}.\n\n` +
-      `POLICY RULES: For genuine organizational-policy questions (HR, Finance, IT, Admin, or Plant Operations — ` +
+      `POLICYRULES: For genuine organizational-policy questions (HR, Finance, IT, Admin, or Plant Operations — ` +
       `e.g. leave, WFH, expenses, security, safety, conduct), call search_policy before answering; never rely on ` +
       `general knowledge for these. Answer ONLY from what search_policy returns, and mention the policy title ` +
       `and section (and page, if given) — e.g. "Source: Leave Policy v3.2 — Section 3.2". If the results don't ` +
