@@ -4,20 +4,20 @@ export const suggestedPrompts: Record<string, string[]> = {
   English: [
     'Show my pending tasks',
     "What's on my calendar today?",
-    'Summarize this week\'s downtime',
-    'Draft an approval reminder',
+    'What is the leave policy?',
+    'Can I work from home?',
   ],
   Hindi: [
     'मेरे लंबित कार्य दिखाएं',
     'आज मेरी मीटिंग्स क्या हैं?',
-    'इस सप्ताह का डाउनटाइम सारांश दें',
-    'अनुमोदन रिमाइंडर तैयार करें',
+    'अवकाश नीति क्या है?',
+    'क्या मैं घर से काम कर सकता हूं?',
   ],
   Telugu: [
     'నా పెండింగ్ టాస్క్‌లు చూపించు',
     'ఈరోజు నా మీటింగ్‌లు ఏమిటి?',
-    'ఈ వారం డౌన్‌టైమ్ సారాంశం ఇవ్వండి',
-    'ఆమోద రిమైండర్ డ్రాఫ్ట్ చేయండి',
+    'సెలవు విధానం ఏమిటి?',
+    'నేను ఇంటి నుండి పని చేయవచ్చా?',
   ],
 }
 

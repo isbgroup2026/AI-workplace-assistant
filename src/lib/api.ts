@@ -540,15 +540,30 @@ export async function askAssistant(
   const { data, error } = await supabase.functions.invoke('ai-assistant', {
     body: { messages: history, language },
   })
+
+  // Case 1: the Edge Function itself couldn't be reached (network/CORS/etc).
+  // This is different from the function running and returning a structured
+  // error — this means the request never got a response at all.
   if (error) {
-    console.error('askAssistant error', error)
-    return "Sorry, I couldn't reach the assistant service right now."
+    console.error('askAssistant invocation error', error)
+    return "Sorry, I couldn't reach the assistant service right now. Please check your connection and try again."
   }
+
+  // Case 2: the function ran and returned a structured backend error
+  // (auth/profile/Groq/tool/etc). It always includes a friendly `reply`
+  // alongside the internal `error` code — log the code+requestId for
+  // debugging, but only ever show the friendly text to the user.
   if (data?.error) {
-    console.error('askAssistant returned error', data.error)
-    return "Sorry, something went wrong processing that request."
+    console.error('askAssistant backend error', data.error, 'requestId:', data.requestId)
   }
-  return data?.reply ?? "Sorry, I couldn't generate a response."
+
+  const reply = typeof data?.reply === 'string' ? data.reply.trim() : ''
+  if (reply.length > 0) return reply
+
+  // Case 3: genuinely unexpected — the function responded but with neither
+  // a usable reply nor an error we recognize.
+  console.error('askAssistant received an unusable response', data)
+  return "Sorry, I didn't get a clear response that time — please try again."
 }
 
 // ---------- Analytics ----------
