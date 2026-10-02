@@ -8,6 +8,7 @@ const pageTitles: Record<Page, string> = {
   chat: 'Chat',
   tasks: 'Tasks',
   teamTasks: 'Team Tasks',
+  adminPolicies: 'Policy Documents',
   meetings: 'Meetings',
   notifications: 'Notifications',
   analytics: 'Analytics',

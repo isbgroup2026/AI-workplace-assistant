@@ -700,3 +700,32 @@ export async function getAnalytics(myId: string): Promise<AnalyticsData> {
 
   return { kpis, taskCompletionTrend, departmentProductivity, messagingActivity, meetingPlatformSplit }
 }
+
+// ---------- Admin: policy document upload ----------
+
+export async function uploadPolicyDocument(input: {
+  file: File
+  title: string
+  department: string
+  policyType: string
+  version: string
+  effectiveDate: string
+}): Promise<{ document_id: string; chunks_inserted: number; chunks_total: number }> {
+  const path = `${Date.now()}-${input.file.name}`
+  const { error: uploadErr } = await supabase.storage.from('policy-documents').upload(path, input.file)
+  if (uploadErr) throw new Error(uploadErr.message)
+
+  const { data, error } = await supabase.functions.invoke('ingest-policy-document', {
+    body: {
+      storage_path: path,
+      title: input.title,
+      department: input.department,
+      policy_type: input.policyType,
+      version: input.version,
+      effective_date: input.effectiveDate,
+    },
+  })
+  if (error) throw new Error(error.message)
+  if (data?.error) throw new Error(data.error)
+  return data
+}

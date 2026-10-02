@@ -11,6 +11,7 @@ import AIAssistant from './pages/AIAssistant'
 import Chat from './pages/Chat'
 import Tasks from './pages/Tasks'
 import TeamTasks from './pages/TeamTasks'
+import AdminPolicies from './pages/AdminPolicies'
 import Meetings from './pages/Meetings'
 import Notifications from './pages/Notifications'
 import Analytics from './pages/Analytics'
@@ -107,6 +108,7 @@ export default function App() {
         unreadNotifications={unreadNotifications}
         plant={user.plant}
         showTeamTasks={user.role === 'Manager' || user.role === 'Admin' || user.role === 'Team Lead'}
+        showAdminPolicies={user.role === 'Admin'}
       />
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar page={page} user={user} unreadNotifications={unreadNotifications} onNavigate={setPage} />
@@ -118,6 +120,7 @@ export default function App() {
           {page === 'chat' && <Chat myId={profile.id} />}
           {page === 'tasks' && <Tasks user={user} myId={profile.id} tasks={tasks} setTasks={setTasks} />}
           {page === 'teamTasks' && <TeamTasks myId={profile.id} tasks={tasks} />}
+          {page === 'adminPolicies' && user.role === 'Admin' && <AdminPolicies />}
           {page === 'meetings' && <Meetings myId={profile.id} meetings={meetings} setMeetings={setMeetings} />}
           {page === 'notifications' && (
             <Notifications myId={profile.id} notifications={notifications} setNotifications={setNotifications} />

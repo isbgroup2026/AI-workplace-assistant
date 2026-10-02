@@ -4,6 +4,7 @@ export type Page =
   | 'chat'
   | 'tasks'
   | 'teamTasks'
+  | 'adminPolicies'
   | 'meetings'
   | 'notifications'
   | 'analytics'

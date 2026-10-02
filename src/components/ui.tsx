@@ -141,15 +141,17 @@ export function Button({
   variant = 'primary',
   className = '',
   type = 'button',
+  disabled = false,
 }: {
   children: ReactNode
   onClick?: () => void
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
   className?: string
   type?: 'button' | 'submit'
+  disabled?: boolean
 }) {
   const base =
-    'inline-flex items-center justify-center gap-2 text-sm font-medium px-4 py-2 rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2'
+    'inline-flex items-center justify-center gap-2 text-sm font-medium px-4 py-2 rounded-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-60 disabled:cursor-not-allowed'
   const variants: Record<string, string> = {
     primary: 'bg-steel-600 text-white hover:bg-steel-700',
     secondary: 'bg-white text-ink border border-line hover:bg-slate-50',
@@ -157,7 +159,7 @@ export function Button({
     danger: 'bg-white text-signal-red border border-red-200 hover:bg-red-50',
   }
   return (
-    <button type={type} onClick={onClick} className={`${base} ${variants[variant]} ${className}`}>
+    <button type={type} onClick={onClick} disabled={disabled} className={`${base} ${variants[variant]} ${className}`}>
       {children}
     </button>
   )

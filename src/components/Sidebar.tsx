@@ -85,18 +85,29 @@ function IconTeam() {
   )
 }
 
+function IconDocument() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
+      <path d="M14 3v5h5M9 13h6M9 17h6" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export default function Sidebar({
   active,
   onNavigate,
   unreadNotifications,
   plant,
   showTeamTasks,
+  showAdminPolicies,
 }: {
   active: Page
   onNavigate: (p: Page) => void
   unreadNotifications: number
   plant: string
   showTeamTasks: boolean
+  showAdminPolicies: boolean
 }) {
   const items: NavItem[] = [
     { id: 'home', label: 'Home', icon: <IconHome /> },
@@ -107,6 +118,7 @@ export default function Sidebar({
     { id: 'meetings', label: 'Meetings', icon: <IconMeetings /> },
     { id: 'notifications', label: 'Notifications', icon: <IconBell />, badge: unreadNotifications },
     { id: 'analytics', label: 'Analytics', icon: <IconAnalytics /> },
+    ...(showAdminPolicies ? [{ id: 'adminPolicies' as Page, label: 'Policy Documents', icon: <IconDocument /> }] : []),
     { id: 'settings', label: 'Settings', icon: <IconSettings /> },
   ]
 
