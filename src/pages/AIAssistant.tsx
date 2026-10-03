@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { AIMessage, CurrentUser } from '../types'
 import { suggestedPrompts, initialConversation } from '../data/ai'
 import { Avatar } from '../components/ui'
+import { MarkdownLite } from '../components/markdown-lite'
 import { listAIMessages, saveAIMessage, askAssistant } from '../lib/api'
 
 const languages: CurrentUser['language'][] = ['English', 'Hindi', 'Telugu']
@@ -99,7 +100,7 @@ export default function AIAssistant({ user, myId }: { user: CurrentUser; myId: s
                     : 'bg-white border border-line text-ink rounded-tl-sm'
                 }`}
               >
-                {m.text}
+                {m.role === 'assistant' ? <MarkdownLite text={m.text} /> : m.text}
               </div>
               <span className="text-[11px] text-inkmuted font-mono mt-1 px-1">{m.timestamp}</span>
             </div>

@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
 
     if (!storage_path || !title || !department || !policy_type || !version || !effective_date) {
       return new Response(JSON.stringify({ error: 'Missing required fields.' }), {
-        status: 400,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
     const { data: userData, error: authErr } = await supabase.auth.getUser()
     if (authErr || !userData?.user) {
       return new Response(JSON.stringify({ error: 'Not authenticated.' }), {
-        status: 401,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
     const { data: me } = await supabase.from('profiles').select('role').eq('id', userData.user.id).single()
     if (!me || me.role !== 'Admin') {
       return new Response(JSON.stringify({ error: 'Only Admins can upload policy documents.' }), {
-        status: 403,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -77,7 +77,7 @@ Deno.serve(async (req) => {
     const { data: fileBlob, error: downloadErr } = await supabase.storage.from('policy-documents').download(storage_path)
     if (downloadErr || !fileBlob) {
       return new Response(JSON.stringify({ error: `Could not read uploaded file: ${downloadErr?.message}` }), {
-        status: 400,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -86,7 +86,7 @@ Deno.serve(async (req) => {
     const chunks = chunkText(rawText)
     if (chunks.length === 0) {
       return new Response(JSON.stringify({ error: 'No readable text content found in the file.' }), {
-        status: 400,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
       .single()
     if (docErr || !doc) {
       return new Response(JSON.stringify({ error: `Could not create policy document: ${docErr?.message}` }), {
-        status: 500,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -138,7 +138,7 @@ Deno.serve(async (req) => {
   } catch (err) {
     console.error('ingest-policy-document error:', String(err))
     return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
+      status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }

@@ -32,8 +32,7 @@ const corsHeaders = {
 }
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
-// const GROQ_MODEL = 'qwen/qwen3.6-27b'
-const GROQ_MODEL = 'qwen/qwen3.8-27b'
+const GROQ_MODEL = 'qwen/qwen3.6-27b'
 const MAX_GROQ_RETRIES = 3
 const GROQ_TIMEOUT_MS = 20000
 const MAX_ITERATIONS = 5
@@ -654,8 +653,10 @@ Deno.serve(async (req) => {
       `Use the provided tools to answer questions and take actions on tasks, meetings, notifications, and chat. ` +
       `Always resolve relative dates ("tomorrow", "next Tuesday") against today's date. ` +
       `If required details are missing (e.g. no due date, no time), ask a concise follow-up question instead of guessing. ` +
-      `Keep replies short and practical. Respond in ${language || 'English'}.\n\n` +
-      `POLICYRULES: For genuine organizational-policy questions (HR, Finance, IT, Admin, or Plant Operations — ` +
+      `Keep replies short and practical. Respond in ${language || 'English'}. ` +
+      `Format with real line breaks between sections and list items (not run-on text) — put each bullet on its own ` +
+      `line starting with "- ", and put each heading on its own line.\n\n` +
+      `POLICY RULES: For genuine organizational-policy questions (HR, Finance, IT, Admin, or Plant Operations — ` +
       `e.g. leave, WFH, expenses, security, safety, conduct), call search_policy before answering; never rely on ` +
       `general knowledge for these. Answer ONLY from what search_policy returns, and mention the policy title ` +
       `and section (and page, if given) — e.g. "Source: Leave Policy v3.2 — Section 3.2". If the results don't ` +
