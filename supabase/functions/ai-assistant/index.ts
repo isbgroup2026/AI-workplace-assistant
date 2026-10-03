@@ -32,7 +32,8 @@ const corsHeaders = {
 }
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
-const GROQ_MODEL = 'qwen/qwen3.6-27b'
+// const GROQ_MODEL = 'qwen/qwen3.6-27b'
+const GROQ_MODEL = 'qwen/qwen3.8-27b'
 const MAX_GROQ_RETRIES = 3
 const GROQ_TIMEOUT_MS = 20000
 const MAX_ITERATIONS = 5
