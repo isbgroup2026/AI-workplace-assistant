@@ -106,13 +106,20 @@ const tools = [
     type: 'function',
     function: {
       name: 'create_task',
-      description: 'Create a new task, optionally assigned to a named colleague.',
+      description:
+        'Create a new task, optionally assigned to a named colleague, or auto-assigned to someone in a given ' +
+        'department. Only set assign_to_department after the user has confirmed it — never set it on the first call.',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string' },
           description: { type: 'string' },
           assignee_name: { type: 'string', description: 'Full name of the person to assign to; omit for self.' },
+          assign_to_department: {
+            type: 'string',
+            description:
+              'Set only after the user confirms — auto-assigns to someone in this department instead of a named person.',
+          },
           due_date: { type: 'string', description: 'YYYY-MM-DD' },
           priority: { type: 'string', enum: ['Low', 'Medium', 'High', 'Critical'] },
         },
@@ -292,11 +299,33 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
 
     case 'create_task': {
       let assigneeId = me.id
+      let taskDepartment = me.department
+
       if (args.assignee_name) {
         const p = await findProfileByName(supabase, args.assignee_name)
         if (!p) return { error: `No employee found matching "${args.assignee_name}".` }
         assigneeId = p.id
+      } else if (args.assign_to_department) {
+        const { data: deptProfiles, error: deptErr } = await supabase
+          .from('profiles')
+          .select('id, name, role')
+          .eq('department', args.assign_to_department)
+        if (deptErr) return { error: deptErr.message }
+        if (!deptProfiles || deptProfiles.length === 0) {
+          return {
+            error:
+              `No employees found with department "${args.assign_to_department}". ` +
+              `Ask the user who to assign it to instead.`,
+          }
+        }
+        // Prefer a Manager/Team Lead/Admin in that department to triage the task,
+        // falling back to any employee there if none hold those roles.
+        const rolePriority: Record<string, number> = { Manager: 0, 'Team Lead': 1, Admin: 2 }
+        deptProfiles.sort((a: any, b: any) => (rolePriority[a.role] ?? 9) - (rolePriority[b.role] ?? 9))
+        assigneeId = deptProfiles[0].id
+        taskDepartment = args.assign_to_department
       }
+
       const { data, error } = await supabase
         .from('tasks')
         .insert({
@@ -305,14 +334,14 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
           assignee_id: assigneeId,
           due_date: args.due_date,
           priority: args.priority ?? 'Medium',
-          department: me.department,
+          department: taskDepartment,
           created_by: me.id,
         })
-        .select('title, due_date, priority, status')
+        .select('title, due_date, priority, status, assignee:assignee_id(name)')
         .single()
       if (error) return { error: error.message }
       if (!data) return { error: 'Task was not created.' }
-      return { created: data }
+      return { created: data, assigned_to: (data as any).assignee?.name ?? 'Unassigned' }
     }
 
     case 'update_task_status': {
@@ -666,7 +695,13 @@ Deno.serve(async (req) => {
       `be a policy conflict rather than picking one yourself. If asked for the caller's own personal balance/usage ` +
       `(e.g. "how many leaves do I have left"), state you cannot access their personal balance, then share the ` +
       `general policy rule if relevant. Never mention tool names, database details, similarity scores, or other ` +
-      `internal implementation details. Do not call search_policy for task, meeting, notification, or chat requests.`
+      `internal implementation details. Do not call search_policy for task, meeting, notification, or chat requests.\n\n` +
+      `TASK ROUTING: When asked to create a task, if its title/description clearly belongs to a specific ` +
+      `department rather than the caller (e.g. "apply for annual leave" is HR, "fix my laptop" is IT), first ask ` +
+      `the user to confirm before routing it — e.g. "This looks like an HR matter — want me to assign it to HR ` +
+      `instead of you?". Only call create_task with assign_to_department set after they say yes; never set it on ` +
+      `the first attempt. If they decline or it's not department-specific, create it for the caller as normal. ` +
+      `After creating any task, always tell the user exactly who it was assigned to by name.`
 
     let convo: any[] = [{ role: 'system', content: systemPrompt }, ...messages]
     let lastFailureCode: string | null = null
