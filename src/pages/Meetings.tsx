@@ -40,6 +40,7 @@ export default function Meetings({
     platform: 'Google Meet' as MeetingPlatform,
     attendeeIds: [] as string[],
     agenda: '',
+    meetingLink: '',
   })
 
   const [form, setForm] = useState({
@@ -50,6 +51,7 @@ export default function Meetings({
     platform: 'Google Meet' as MeetingPlatform,
     attendeeIds: [] as string[],
     agenda: '',
+    meetingLink: '',
   })
 
   const [rescheduleForm, setRescheduleForm] = useState({ date: '', time: '' })
@@ -89,6 +91,7 @@ export default function Meetings({
       platform: m.platform,
       attendeeIds: m.attendeeIds.filter((id) => id !== myId),
       agenda: m.agenda,
+      meetingLink: m.meetingLink ?? '',
     })
   }
 
@@ -116,6 +119,7 @@ export default function Meetings({
           durationMinutes,
           platform: editForm.platform,
           agenda: editForm.agenda,
+          meetingLink: editForm.meetingLink,
           attendeeIds: editForm.attendeeIds,
         },
         myId,
@@ -142,12 +146,13 @@ export default function Meetings({
           platform: form.platform,
           attendeeIds: form.attendeeIds,
           agenda: form.agenda || 'No agenda provided.',
+          meetingLink: form.meetingLink,
         },
         myId,
       )
       setMeetings((prev) => [created, ...prev])
       setScheduleOpen(false)
-      setForm({ title: '', date: '', time: '', duration: '30 min', platform: 'Google Meet', attendeeIds: [], agenda: '' })
+      setForm({ title: '', date: '', time: '', duration: '30 min', platform: 'Google Meet', attendeeIds: [], agenda: '', meetingLink: '' })
     } catch (err) {
       setScheduleError(err instanceof Error ? err.message : 'Failed to schedule meeting.')
     }
@@ -234,6 +239,16 @@ export default function Meetings({
                       <div className="flex items-center gap-3 mt-2 text-xs text-inkmuted font-mono flex-wrap">
                         <span>{m.time} – {m.endTime}</span>
                         <span>{m.platform}</span>
+                        {m.meetingLink && m.status !== 'Cancelled' && (
+                          <a
+                            href={m.meetingLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-steel-600 hover:underline font-sans font-medium"
+                          >
+                            Join
+                          </a>
+                        )}
                         <span>Organizer: {m.organizerId === myId ? 'You' : m.organizerName}</span>
                         <span>{m.attendees.length} attendees</span>
                       </div>
@@ -377,6 +392,14 @@ export default function Meetings({
               )}
             </div>
           </Field>
+          <Field label="Meeting link (optional)">
+            <input
+              className={inputClass}
+              value={form.meetingLink}
+              onChange={(e) => setForm({ ...form, meetingLink: e.target.value })}
+              placeholder="https://zoom.us/j/..."
+            />
+          </Field>
           <Field label="Agenda">
             <textarea
               className={inputClass}
@@ -508,6 +531,14 @@ export default function Meetings({
                     </label>
                   ))}
               </div>
+            </Field>
+            <Field label="Meeting link (optional)">
+              <input
+                className={inputClass}
+                value={editForm.meetingLink}
+                onChange={(e) => setEditForm({ ...editForm, meetingLink: e.target.value })}
+                placeholder="https://zoom.us/j/..."
+              />
             </Field>
             <Field label="Agenda">
               <textarea

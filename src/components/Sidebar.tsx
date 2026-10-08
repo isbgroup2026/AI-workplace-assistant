@@ -118,7 +118,8 @@ export default function Sidebar({
     { id: 'meetings', label: 'Meetings', icon: <IconMeetings /> },
     { id: 'notifications', label: 'Notifications', icon: <IconBell />, badge: unreadNotifications },
     { id: 'analytics', label: 'Analytics', icon: <IconAnalytics /> },
-    ...(showAdminPolicies ? [{ id: 'adminPolicies' as Page, label: 'Policy Documents', icon: <IconDocument /> }] : []),
+    { id: 'policyLibrary' as Page, label: 'Policy Library', icon: <IconDocument /> },
+    ...(showAdminPolicies ? [{ id: 'adminPolicies' as Page, label: 'Manage Policies', icon: <IconDocument /> }] : []),
     { id: 'settings', label: 'Settings', icon: <IconSettings /> },
   ]
 

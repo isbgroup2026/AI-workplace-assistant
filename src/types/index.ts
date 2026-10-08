@@ -5,6 +5,7 @@ export type Page =
   | 'tasks'
   | 'teamTasks'
   | 'adminPolicies'
+  | 'policyLibrary'
   | 'meetings'
   | 'notifications'
   | 'analytics'
@@ -47,6 +48,7 @@ export interface Task {
   assignee: string
   assigneeInitials: string
   dueDate: string
+  dueTime: string | null
   priority: TaskPriority
   status: TaskStatus
   department: string
@@ -70,6 +72,7 @@ export interface Meeting {
   organizerName: string
   status: MeetingStatus
   agenda: string
+  meetingLink: string | null
   updatedAt: string
 }
 

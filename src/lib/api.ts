@@ -72,6 +72,7 @@ interface TaskRow {
   description: string
   assignee_id: string | null
   due_date: string
+  due_time: string | null
   priority: TaskPriority
   status: TaskStatus
   department: string
@@ -89,6 +90,7 @@ function taskFromRow(row: TaskRow, myId: string): Task {
     assignee: isMe ? 'You' : row.assignee?.name ?? 'Unassigned',
     assigneeInitials: isMe ? 'ME' : row.assignee?.initials ?? '—',
     dueDate: row.due_date,
+    dueTime: row.due_time ? row.due_time.slice(0, 5) : null,
     priority: row.priority,
     status: row.status,
     department: row.department,
@@ -145,6 +147,7 @@ interface MeetingRow {
   platform: MeetingPlatform
   status: Meeting['status']
   agenda: string
+  meeting_link: string | null
   created_by: string
   updated_at: string
   organizer?: { name: string } | null
@@ -189,6 +192,7 @@ function meetingFromRow(row: MeetingRow, attendeeIds: string[], attendeeNames: s
     organizerName: row.organizer?.name ?? 'Unknown',
     status: row.status,
     agenda: row.agenda ?? '',
+    meetingLink: row.meeting_link ?? null,
     updatedAt: row.updated_at,
   }
 }
@@ -211,7 +215,7 @@ export async function listMeetings(): Promise<Meeting[]> {
 }
 
 export async function createMeeting(
-  input: { title: string; date: string; time: string; durationMinutes: number; platform: MeetingPlatform; attendeeIds: string[]; agenda: string },
+  input: { title: string; date: string; time: string; durationMinutes: number; platform: MeetingPlatform; attendeeIds: string[]; agenda: string; meetingLink?: string },
   myId: string,
 ): Promise<Meeting> {
   const { data, error } = await supabase
@@ -223,6 +227,7 @@ export async function createMeeting(
       duration_minutes: input.durationMinutes,
       platform: input.platform,
       agenda: input.agenda,
+      meeting_link: input.meetingLink?.trim() || null,
       created_by: myId,
       status: 'Scheduled',
     })
@@ -254,6 +259,7 @@ export async function updateMeeting(
     platform: MeetingPlatform
     agenda: string
     attendeeIds: string[]
+    meetingLink?: string
   },
   myId: string,
 ): Promise<Meeting> {
@@ -266,6 +272,7 @@ export async function updateMeeting(
       duration_minutes: input.durationMinutes,
       platform: input.platform,
       agenda: input.agenda,
+      meeting_link: input.meetingLink?.trim() || null,
     })
     .eq('id', id)
     .select('*, organizer:created_by(name)')
@@ -571,7 +578,7 @@ export async function askAssistant(
 export interface AnalyticsData {
   kpis: { label: string; value: string; delta: string; positive: boolean }[]
   taskCompletionTrend: { label: string; value: number }[]
-  departmentProductivity: { department: string; completion: number }[]
+  departmentProductivity: { department: string; completion: number; pending: number; overdue: number }[]
   messagingActivity: { label: string; value: number }[]
   meetingPlatformSplit: { platform: string; value: number; color: string }[]
 }
@@ -599,11 +606,13 @@ function formatDelta(current: number, previous: number, unit = '%') {
   return `${sign}${diff}${unit} vs last month`
 }
 
-export async function getAnalytics(myId: string): Promise<AnalyticsData> {
+export async function getAnalytics(myId: string, isAdmin = false): Promise<AnalyticsData> {
   const [{ data: allTasks }, { data: allMeetings }, { data: aiMsgs }, { data: myChatMsgs }] = await Promise.all([
     supabase.from('tasks').select('status, due_date, department'),
     supabase.from('meetings').select('meeting_date, platform, status'),
-    supabase.from('ai_messages').select('created_at').eq('user_id', myId).eq('role', 'user'),
+    isAdmin
+      ? supabase.from('ai_messages').select('created_at').eq('role', 'user')
+      : supabase.from('ai_messages').select('created_at').eq('user_id', myId).eq('role', 'user'),
     supabase.from('chat_messages').select('created_at').eq('sender_id', myId),
   ])
 
@@ -645,7 +654,7 @@ export async function getAnalytics(myId: string): Promise<AnalyticsData> {
       positive: completionThisMonth >= completionLastMonth,
     },
     {
-      label: 'Your AI interactions',
+      label: isAdmin ? 'AI interactions (all users)' : 'Your AI interactions',
       value: `${aiThisMonth}`,
       delta: formatDelta(aiThisMonth, aiLastMonth, ''),
       positive: aiThisMonth >= aiLastMonth,
@@ -675,7 +684,14 @@ export async function getAnalytics(myId: string): Promise<AnalyticsData> {
   const departments = Array.from(new Set(tasks.map((t: any) => t.department))).filter(Boolean)
   const departmentProductivity = departments.map((dept) => {
     const deptTasks = tasks.filter((t: any) => t.department === dept)
-    return { department: dept as string, completion: pct(deptTasks.filter((t: any) => t.status === 'Done').length, deptTasks.length) }
+    const todayStr = new Date().toISOString().slice(0, 10)
+    const open = deptTasks.filter((t: any) => t.status !== 'Done')
+    return {
+      department: dept as string,
+      completion: pct(deptTasks.filter((t: any) => t.status === 'Done').length, deptTasks.length),
+      pending: open.length,
+      overdue: open.filter((t: any) => t.due_date < todayStr).length,
+    }
   })
 
   // Your messaging activity, last 7 days
@@ -734,14 +750,38 @@ export async function uploadPolicyDocument(input: {
 
 // ---------- AI Assistant: active policy list (for dynamic suggested prompts) ----------
 
-export async function listActivePolicies(): Promise<{ title: string; department: string }[]> {
+export interface PolicySummary {
+  id: string
+  title: string
+  department: string
+  policy_type: string
+  version: string
+  effective_date: string
+}
+
+export async function listActivePolicies(): Promise<PolicySummary[]> {
   const { data, error } = await supabase
     .from('policy_documents')
-    .select('title, department')
+    .select('id, title, department, policy_type, version, effective_date')
     .eq('status', 'active')
     .order('title', { ascending: true })
   if (error) {
     console.error('listActivePolicies error', error)
+    return []
+  }
+  return data ?? []
+}
+
+export async function listPolicySections(
+  documentId: string,
+): Promise<{ section_name: string | null; chunk_text: string }[]> {
+  const { data, error } = await supabase
+    .from('policy_chunks')
+    .select('section_name, chunk_text')
+    .eq('document_id', documentId)
+    .order('chunk_index', { ascending: true })
+  if (error) {
+    console.error('listPolicySections error', error)
     return []
   }
   return data ?? []

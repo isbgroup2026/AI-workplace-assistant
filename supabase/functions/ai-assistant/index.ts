@@ -121,6 +121,7 @@ const tools = [
               'Set only after the user confirms — auto-assigns to someone in this department instead of a named person.',
           },
           due_date: { type: 'string', description: 'YYYY-MM-DD' },
+          due_time: { type: 'string', description: 'Optional HH:MM in 24-hour time, e.g. "by 2 PM" -> "14:00".' },
           priority: { type: 'string', enum: ['Low', 'Medium', 'High', 'Critical'] },
         },
         required: ['title', 'due_date'],
@@ -168,6 +169,7 @@ const tools = [
           platform: { type: 'string', enum: ['Google Meet', 'Zoom', 'Webex'] },
           attendee_names: { type: 'array', items: { type: 'string' } },
           agenda: { type: 'string' },
+          meeting_link: { type: 'string', description: 'Optional video call URL, if the user provides one.' },
         },
         required: ['title', 'date', 'time'],
       },
@@ -237,6 +239,87 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'list_team_tasks',
+      description:
+        "For Managers/Team Leads/Admins only: list tasks belonging to the caller's direct reports (not their own), " +
+        'optionally filtered by status. Use for "what is my team working on" type questions.',
+      parameters: {
+        type: 'object',
+        properties: { status: { type: 'string', enum: ['Pending', 'In Progress', 'Done'] } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_tasks_by_department',
+      description:
+        'For Managers/Admins only: summarize task counts (total, done, overdue) grouped by department, or for one ' +
+        'named department show the individual team members and their task status. Use for cross-department ' +
+        'questions like "which department has the most overdue tasks".',
+      parameters: {
+        type: 'object',
+        properties: { department: { type: 'string', description: 'Optional — drill into one department by name.' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_meeting_availability',
+      description:
+        'Checks for scheduling conflicts among named attendees (or everyone in a named department) within a date ' +
+        'and time window, using meetings already in this system. Proposes a free slot. Does NOT book anything or ' +
+        'check external calendars — always confirm the proposed slot with the user before calling create_meeting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          attendee_names: { type: 'array', items: { type: 'string' } },
+          department: { type: 'string', description: 'Optional — include everyone in this department as attendees.' },
+          date: { type: 'string', description: 'YYYY-MM-DD' },
+          window_start: { type: 'string', description: 'HH:MM 24-hour, start of the search window' },
+          window_end: { type: 'string', description: 'HH:MM 24-hour, end of the search window' },
+          duration_minutes: { type: 'number' },
+        },
+        required: ['date', 'window_start', 'window_end'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reschedule_meeting',
+      description:
+        "Reschedules a meeting the caller organized, matched by its title (partial match ok), to a new date/time. " +
+        'Updates the existing meeting in place — never creates a duplicate.',
+      parameters: {
+        type: 'object',
+        properties: {
+          meeting_title: { type: 'string' },
+          new_date: { type: 'string', description: 'YYYY-MM-DD' },
+          new_time: { type: 'string', description: 'HH:MM 24-hour' },
+        },
+        required: ['meeting_title', 'new_date', 'new_time'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_onboarding_checklist',
+      description:
+        'Creates the standard set of onboarding tasks (IT setup, policy acknowledgement, induction module, meet ' +
+        'your buddy) assigned to a named new employee.',
+      parameters: {
+        type: 'object',
+        properties: { employee_name: { type: 'string' } },
+        required: ['employee_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_policy',
       description:
         'Search approved organizational policy documents (HR, Finance, IT, Admin, Plant Operations — e.g. leave, WFH, expenses, security, safety, conduct) for the answer to a policy question. Only use for genuine policy questions, never for tasks/meetings/notifications/chat.',
@@ -260,7 +343,7 @@ const tools = [
 async function findProfileByName(supabase: any, name: string) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, name, initials')
+    .select('id, name, initials, department, manager_id')
     .ilike('name', `%${name}%`)
     .limit(1)
     .maybeSingle()
@@ -315,12 +398,15 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
     case 'create_task': {
       let assigneeId = me.id
       let taskDepartment = me.department
+      let fyiPersonId: string | null = null // notified but not the actual assignee (see dual-assignment note below)
 
+      let namedPerson: { id: string; name: string; department?: string } | null = null
       if (args.assignee_name) {
-        const p = await findProfileByName(supabase, args.assignee_name)
-        if (!p) return { error: `No employee found matching "${args.assignee_name}".` }
-        assigneeId = p.id
-      } else if (args.assign_to_department) {
+        namedPerson = await findProfileByName(supabase, args.assignee_name)
+        if (!namedPerson) return { error: `No employee found matching "${args.assignee_name}".` }
+      }
+
+      if (args.assign_to_department) {
         const { data: deptProfiles, error: deptErr } = await supabase
           .from('profiles')
           .select('id, name, role')
@@ -333,12 +419,25 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
               `Ask the user who to assign it to instead.`,
           }
         }
-        // Prefer a Manager/Team Lead/Admin in that department to triage the task,
-        // falling back to any employee there if none hold those roles.
         const rolePriority: Record<string, number> = { Manager: 0, 'Team Lead': 1, Admin: 2 }
         deptProfiles.sort((a: any, b: any) => (rolePriority[a.role] ?? 9) - (rolePriority[b.role] ?? 9))
-        assigneeId = deptProfiles[0].id
+
+        // Dual-assignment rule: a department-relevant task always goes to
+        // someone in that department by default. If the user also named a
+        // specific person, honor that name as the actual assignee ONLY if
+        // they're genuinely in that department; otherwise the department
+        // pick becomes the assignee and the named person is kept in the
+        // loop via a separate notification instead (tasks have one
+        // assignee, so this is how both intents get satisfied).
+        if (namedPerson && (namedPerson as any).department === args.assign_to_department) {
+          assigneeId = namedPerson.id
+        } else {
+          assigneeId = deptProfiles[0].id
+          if (namedPerson) fyiPersonId = namedPerson.id
+        }
         taskDepartment = args.assign_to_department
+      } else if (namedPerson) {
+        assigneeId = namedPerson.id
       }
 
       const { data, error } = await supabase
@@ -348,14 +447,36 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
           description: args.description ?? '',
           assignee_id: assigneeId,
           due_date: args.due_date,
+          due_time: args.due_time ?? null,
           priority: args.priority ?? 'Medium',
           department: taskDepartment,
           created_by: me.id,
         })
-        .select('id, title, due_date, priority, status, assignee:assignee_id(name)')
+        .select('id, title, due_date, due_time, priority, status, assignee:assignee_id(name)')
         .single()
       if (error) return { error: error.message }
       if (!data) return { error: 'Task was not created.' }
+
+      // Notify the assignee (if it's not the caller creating it for themself).
+      if (assigneeId !== me.id) {
+        await supabase.from('notifications').insert({
+          user_id: assigneeId,
+          type: 'task',
+          title: 'New task assigned to you',
+          detail: `${me.name} assigned you: "${data.title}"`,
+        })
+      }
+      // Keep the originally-named person informed if the task actually went
+      // to a department pick instead of them.
+      if (fyiPersonId) {
+        await supabase.from('notifications').insert({
+          user_id: fyiPersonId,
+          type: 'task',
+          title: 'Task routed to a colleague',
+          detail: `"${data.title}" was routed to someone in ${taskDepartment} instead of you, since that's who handles this.`,
+        })
+      }
+
       return {
         created: data,
         assigned_to: (data as any).assignee?.name ?? 'Unassigned',
@@ -411,6 +532,7 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
         duration_minutes: args.duration_minutes ?? 30,
         platform: args.platform ?? 'Google Meet',
         agenda: args.agenda ?? '',
+        meeting_link: args.meeting_link ?? null,
         status: 'Scheduled',
         created_by: me.id,
       })
@@ -504,6 +626,168 @@ async function executeTool(supabase: any, me: any, name: string, args: any): Pro
           remaining: b.entitled_days - b.used_days,
         })),
       }
+    }
+
+    case 'list_team_tasks': {
+      // Relies entirely on RLS: a Manager/Team Lead's tasks SELECT policy
+      // already includes their direct reports' rows. No assignee_id filter
+      // here is what makes "team" tasks visible instead of just "mine".
+      let q = supabase
+        .from('tasks')
+        .select('title, status, priority, due_date, due_time, assignee:assignee_id(name)')
+        .neq('assignee_id', me.id)
+      if (args.status) q = q.eq('status', args.status)
+      const { data, error } = await q.order('due_date', { ascending: true })
+      if (error) return { error: error.message }
+      return {
+        tasks: (data ?? []).map((t: any) => ({
+          title: t.title,
+          assignee: t.assignee?.name ?? 'Unknown',
+          status: t.status,
+          priority: t.priority,
+          due_date: t.due_date,
+          due_time: t.due_time,
+        })),
+      }
+    }
+
+    case 'list_tasks_by_department': {
+      // Relies on RLS: only Admins (or a Manager for their own reports)
+      // see rows outside their own — this naturally scopes to what the
+      // caller is actually allowed to see.
+      let q = supabase.from('tasks').select('department, status, due_date, assignee:assignee_id(name)')
+      if (args.department) q = q.eq('department', args.department)
+      const { data, error } = await q
+      if (error) return { error: error.message }
+      const rows = data ?? []
+      const today = new Date().toISOString().slice(0, 10)
+
+      if (args.department) {
+        return {
+          department: args.department,
+          members: rows.map((r: any) => ({
+            name: r.assignee?.name ?? 'Unknown',
+            status: r.status,
+            overdue: r.status !== 'Done' && r.due_date < today,
+          })),
+        }
+      }
+
+      const byDept: Record<string, { total: number; done: number; overdue: number }> = {}
+      for (const r of rows) {
+        const d = r.department ?? 'Unassigned'
+        byDept[d] ??= { total: 0, done: 0, overdue: 0 }
+        byDept[d].total++
+        if (r.status === 'Done') byDept[d].done++
+        else if (r.due_date < today) byDept[d].overdue++
+      }
+      return { departments: byDept }
+    }
+
+    case 'check_meeting_availability': {
+      let attendeeIds: string[] = []
+      for (const name of args.attendee_names ?? []) {
+        const p = await findProfileByName(supabase, name)
+        if (p) attendeeIds.push(p.id)
+      }
+      if (args.department) {
+        const { data: deptPeople } = await supabase.from('profiles').select('id').eq('department', args.department)
+        attendeeIds.push(...(deptPeople ?? []).map((p: any) => p.id))
+      }
+      attendeeIds = Array.from(new Set(attendeeIds))
+      if (attendeeIds.length === 0) return { error: 'No matching attendees found to check availability for.' }
+
+      const { data: attendeeRows, error: attErr } = await supabase
+        .from('meeting_attendees')
+        .select('meeting_id')
+        .in('user_id', attendeeIds)
+      if (attErr) return { error: attErr.message }
+      const meetingIds = Array.from(new Set((attendeeRows ?? []).map((r: any) => r.meeting_id)))
+
+      let existing: any[] = []
+      if (meetingIds.length) {
+        const { data, error } = await supabase
+          .from('meetings')
+          .select('meeting_time, duration_minutes')
+          .in('id', meetingIds)
+          .eq('meeting_date', args.date)
+          .neq('status', 'Cancelled')
+        if (error) return { error: error.message }
+        existing = data ?? []
+      }
+
+      const duration = args.duration_minutes ?? 30
+      const toMinutes = (t: string) => {
+        const [h, m] = t.split(':').map(Number)
+        return h * 60 + m
+      }
+      const windowStart = toMinutes(args.window_start)
+      const windowEnd = toMinutes(args.window_end)
+      const busy = existing.map((m: any) => {
+        const start = toMinutes(m.meeting_time.slice(0, 5))
+        return { start, end: start + m.duration_minutes }
+      })
+
+      for (let slot = windowStart; slot + duration <= windowEnd; slot += 15) {
+        const conflict = busy.some((b) => slot < b.end && slot + duration > b.start)
+        if (!conflict) {
+          const h = Math.floor(slot / 60)
+          const m = slot % 60
+          return {
+            available: true,
+            proposed_time: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+            date: args.date,
+            note: 'This only checks meetings already in this system, not any external calendar.',
+          }
+        }
+      }
+      return {
+        available: false,
+        note: 'No free slot found in that window based on meetings already in this system. Try a different window or day.',
+      }
+    }
+
+    case 'reschedule_meeting': {
+      const { data: match, error: findErr } = await supabase
+        .from('meetings')
+        .select('id, title')
+        .ilike('title', `%${args.meeting_title}%`)
+        .eq('created_by', me.id)
+        .limit(1)
+        .maybeSingle()
+      if (findErr) return { error: findErr.message }
+      if (!match) return { error: `No meeting you organized matches "${args.meeting_title}".` }
+      const { error } = await supabase
+        .from('meetings')
+        .update({ meeting_date: args.new_date, meeting_time: `${args.new_time}:00`, status: 'Rescheduled' })
+        .eq('id', match.id)
+      if (error) return { error: error.message }
+      return { rescheduled: match.title, new_date: args.new_date, new_time: args.new_time }
+    }
+
+    case 'create_onboarding_checklist': {
+      const person = await findProfileByName(supabase, args.employee_name)
+      if (!person) return { error: `No employee found matching "${args.employee_name}".` }
+      const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+      const standardTasks = [
+        'Complete IT setup and system access',
+        'Acknowledge company policies',
+        'Complete induction module',
+        'Meet your assigned buddy / HR contact',
+      ]
+      const { error } = await supabase.from('tasks').insert(
+        standardTasks.map((title) => ({
+          title,
+          description: 'Standard onboarding task.',
+          assignee_id: person.id,
+          due_date: dueDate,
+          priority: 'Medium',
+          department: person.department,
+          created_by: me.id,
+        })),
+      )
+      if (error) return { error: error.message }
+      return { created_for: person.name, task_count: standardTasks.length, due_date: dueDate }
     }
 
     case 'search_policy': {
@@ -768,6 +1052,10 @@ Deno.serve(async (req) => {
       `the user to confirm before routing it — e.g. "This looks like an HR matter — want me to assign it to HR ` +
       `instead of you?". Only call create_task with assign_to_department set after they say yes; never set it on ` +
       `the first attempt. If they decline or it's not department-specific, create it for the caller as normal. ` +
+      `EXCEPTION: if the user already named a specific person to assign it to AND the task clearly belongs to a ` +
+      `different department, do not ask — call create_task with BOTH assignee_name and assign_to_department ` +
+      `set; the system assigns it to the right person in that department and keeps the named person informed ` +
+      `by notification. Then explain plainly who it went to and who was notified. ` +
       `After creating any task, always tell the user exactly who it was assigned to by name. When a created task ` +
       `has a reference, mention it so they can refer back to it later.\n\n` +
       `LEAVE QUESTIONS: For general entitlement/rule questions (e.g. "how many casual leaves are employees ` +
@@ -780,7 +1068,22 @@ Deno.serve(async (req) => {
       `confirmation first, this is time-critical and different from the routine department-routing case above. ` +
       `Confirm receipt, state who it's assigned to, and give the task's reference number. If asked about the ` +
       `status of something they reported earlier (e.g. "what happened to my complaint/report"), call list_tasks ` +
-      `and match it by title/description, then report its current status.`
+      `and match it by title/description, then report its current status.\n\n` +
+      `TEAM & DEPARTMENT VIEWS: If the caller is a Team Lead/Manager/Admin and asks about their team's work (e.g. ` +
+      `"what's pending on my team"), use list_team_tasks, not list_tasks (which only covers the caller's own). ` +
+      `For cross-department questions (e.g. "which department has the most overdue tasks"), use ` +
+      `list_tasks_by_department. These tools only return what the caller's actual access permits — if they get ` +
+      `an empty or partial result, that reflects their real permissions, not a bug.\n\n` +
+      `MEETING AVAILABILITY: Before scheduling a meeting with multiple people, call check_meeting_availability ` +
+      `first, propose the slot it returns, and WAIT for the user to confirm before calling create_meeting — never ` +
+      `book directly off an availability check. This only checks meetings already in this system, not any real ` +
+      `external calendar — say so if asked, don't imply it checked Google/Outlook calendars. If a slot has a ` +
+      `conflict, suggest the next available one automatically rather than just reporting the conflict. To move an ` +
+      `existing meeting, use reschedule_meeting (it updates in place — never creates a duplicate).\n\n` +
+      `ONBOARDING: If asked to set up onboarding for a named new employee, use create_onboarding_checklist.\n\n` +
+      `ACCURACY: Never invent information — for policy questions this means ONLY using what search_policy ` +
+      `returns, and for task/meeting/people questions this means ONLY using what the tools return, never filling ` +
+      `in plausible-sounding details. If a tool returns nothing useful, say so plainly rather than guessing.`
 
     let convo: any[] = [{ role: 'system', content: systemPrompt }, ...messages]
     let lastFailureCode: string | null = null

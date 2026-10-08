@@ -13,6 +13,18 @@ const policyQuestionTemplate: Record<CurrentUser['language'], (title: string) =>
   Telugu: (title) => `${title} ఏమిటి?`,
 }
 
+const teamPrompts: Record<CurrentUser['language'], string> = {
+  English: "What tasks are still pending on my team?",
+  Hindi: 'मेरी टीम के कौन से कार्य अभी लंबित हैं?',
+  Telugu: 'నా టీమ్‌లో ఇంకా పెండింగ్‌లో ఉన్న టాస్క్‌లు ఏమిటి?',
+}
+
+const departmentPrompts: Record<CurrentUser['language'], string> = {
+  English: 'Which department has the most overdue tasks?',
+  Hindi: 'किस विभाग में सबसे ज़्यादा विलंबित कार्य हैं?',
+  Telugu: 'ఏ విభాగంలో ఎక్కువ ఆలస్యమైన టాస్క్‌లు ఉన్నాయి?',
+}
+
 export default function AIAssistant({ user, myId }: { user: CurrentUser; myId: string }) {
   const [language, setLanguage] = useState<CurrentUser['language']>(user.language)
   const [conversations, setConversations] = useState<Record<string, AIMessage[]>>(initialConversation)
@@ -20,6 +32,12 @@ export default function AIAssistant({ user, myId }: { user: CurrentUser; myId: s
   const [isTyping, setIsTyping] = useState(false)
   const [policyPrompts, setPolicyPrompts] = useState<string[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Role-aware shortcuts: only shown to people whose access actually
+  // supports the answer (RLS enforces this server-side regardless).
+  const rolePrompts: string[] = []
+  if (user.role === 'Team Lead' || user.role === 'Manager' || user.role === 'Admin') rolePrompts.push(teamPrompts[language])
+  if (user.role === 'Manager' || user.role === 'Admin') rolePrompts.push(departmentPrompts[language])
 
   useEffect(() => {
     listActivePolicies().then((policies) => {
@@ -140,7 +158,7 @@ export default function AIAssistant({ user, myId }: { user: CurrentUser; myId: s
 
       <div className="px-6 pb-3">
         <div className="flex flex-wrap gap-2 mb-3">
-          {[...suggestedPrompts[language], ...policyPrompts].map((p) => (
+          {[...suggestedPrompts[language], ...rolePrompts, ...policyPrompts].map((p) => (
             <button
               key={p}
               onClick={() => sendMessage(p)}

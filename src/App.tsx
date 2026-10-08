@@ -12,6 +12,7 @@ import Chat from './pages/Chat'
 import Tasks from './pages/Tasks'
 import TeamTasks from './pages/TeamTasks'
 import AdminPolicies from './pages/AdminPolicies'
+import PolicyLibrary from './pages/PolicyLibrary'
 import Meetings from './pages/Meetings'
 import Notifications from './pages/Notifications'
 import Analytics from './pages/Analytics'
@@ -120,12 +121,13 @@ export default function App() {
           {page === 'chat' && <Chat myId={profile.id} />}
           {page === 'tasks' && <Tasks user={user} myId={profile.id} tasks={tasks} setTasks={setTasks} />}
           {page === 'teamTasks' && <TeamTasks myId={profile.id} tasks={tasks} />}
+          {page === 'policyLibrary' && <PolicyLibrary />}
           {page === 'adminPolicies' && user.role === 'Admin' && <AdminPolicies />}
           {page === 'meetings' && <Meetings myId={profile.id} meetings={meetings} setMeetings={setMeetings} />}
           {page === 'notifications' && (
             <Notifications myId={profile.id} notifications={notifications} setNotifications={setNotifications} />
           )}
-          {page === 'analytics' && <Analytics myId={profile.id} />}
+          {page === 'analytics' && <Analytics myId={profile.id} isAdmin={user.role === 'Admin'} />}
           {page === 'settings' && <Settings user={user} setUser={setUser as React.Dispatch<React.SetStateAction<CurrentUser>>} onLogout={handleLogout} />}
         </main>
       </div>

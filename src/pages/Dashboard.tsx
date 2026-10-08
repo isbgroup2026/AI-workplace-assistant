@@ -148,7 +148,7 @@ export default function Dashboard({
               <li key={t.id} className="py-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium text-ink">{t.title}</p>
-                  <p className="text-xs text-inkmuted font-mono mt-0.5">Due {t.dueDate}</p>
+                  <p className="text-xs text-inkmuted font-mono mt-0.5">Due {t.dueDate}{t.dueTime ? ` ${t.dueTime}` : ''}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <PriorityTag priority={t.priority} />

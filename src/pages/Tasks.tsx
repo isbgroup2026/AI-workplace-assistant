@@ -173,7 +173,7 @@ export default function Tasks({
                 {scope === 'team' && (
                   <td className="px-5 py-3.5 text-inkmuted">{t.assignee}</td>
                 )}
-                <td className="px-5 py-3.5 text-inkmuted font-mono text-xs">{t.dueDate}</td>
+                <td className="px-5 py-3.5 text-inkmuted font-mono text-xs">{t.dueDate}{t.dueTime ? ` ${t.dueTime}` : ''}</td>
                 <td className="px-5 py-3.5">
                   <PriorityTag priority={t.priority} />
                 </td>

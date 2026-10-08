@@ -140,7 +140,7 @@ export default function TeamTasks({ myId, tasks }: { myId: string; tasks: Task[]
                   <p className="text-xs text-inkmuted mt-0.5">{t.department}</p>
                 </td>
                 <td className={`px-5 py-3.5 font-mono text-xs ${isOverdue(t) ? 'text-signal-red font-medium' : 'text-inkmuted'}`}>
-                  {t.dueDate}
+                  {t.dueDate}{t.dueTime ? ` ${t.dueTime}` : ''}
                   {isOverdue(t) && ' · Overdue'}
                 </td>
                 <td className="px-5 py-3.5">

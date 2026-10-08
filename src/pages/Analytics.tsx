@@ -3,15 +3,15 @@ import { Card, SectionHeading } from '../components/ui'
 import { BarChart, LineChart, DonutChart } from '../components/charts'
 import { getAnalytics, AnalyticsData } from '../lib/api'
 
-export default function Analytics({ myId }: { myId: string }) {
+export default function Analytics({ myId, isAdmin = false }: { myId: string; isAdmin?: boolean }) {
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    getAnalytics(myId)
+    getAnalytics(myId, isAdmin)
       .then(setData)
       .finally(() => setLoading(false))
-  }, [myId])
+  }, [myId, isAdmin])
 
   if (loading) {
     return <div className="p-6 text-sm text-inkmuted">Loading analytics…</div>
@@ -73,7 +73,10 @@ export default function Analytics({ myId }: { myId: string }) {
                 <div key={d.department}>
                   <div className="flex items-center justify-between text-sm mb-1">
                     <span className="text-ink font-medium">{d.department}</span>
-                    <span className="text-inkmuted font-mono text-xs">{d.completion}%</span>
+                    <span className="text-inkmuted font-mono text-xs">
+                      {d.completion}% done · {d.pending} open
+                      {d.overdue > 0 && <span className="text-signal-red"> · {d.overdue} overdue</span>}
+                    </span>
                   </div>
                   <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
                     <div
