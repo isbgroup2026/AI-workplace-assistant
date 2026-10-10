@@ -961,6 +961,78 @@ function validateGroqData(data: any): { valid: boolean; message?: any } {
   return { valid: true, message: choice.message }
 }
 
+// ---------- Grounding guards: keep answers inside the database ----------
+
+// Questions about live data or company policy must be answered from a tool
+// result. When one of these appears in the user's latest message, the first
+// model call is forced to use a tool instead of answering from thin air.
+const DATA_INTENT =
+  /\b(tasks?|meetings?|calendar|schedule|notifications?|leaves?|balance|overdue|pending|assigned|team|policy|policies|wfh|work from home|reimburse\w*|entitle\w*|allowed|safety|sop|procedure)\b|कार्य|टास्क|मीटिंग|छुट्टी|अवकाश|नीति|టాస్క్|మీటింగ్|సెలవు|విధానం/i
+
+const LIST_TOOLS = new Set(['list_tasks', 'list_team_tasks', 'list_meetings', 'list_notifications'])
+
+function collectStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase()
+    if (v.length >= 3) out.push(v)
+  } else if (Array.isArray(value)) value.forEach((v) => collectStrings(v, out))
+  else if (value && typeof value === 'object') Object.values(value as object).forEach((v) => collectStrings(v, out))
+  return out
+}
+
+// Returns the bullet/numbered lines in `answer` that match nothing a tool returned.
+function findUngroundedItems(answer: string, toolResults: { name: string; result: any }[]): string[] {
+  const known = collectStrings(toolResults.map((t) => t.result))
+  const bad: string[] = []
+  for (const line of answer.split('\n')) {
+    const m = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/)
+    if (!m) continue
+    const item = m[1].replace(/[*_`]/g, '').toLowerCase().trim()
+    if (item.length < 4) continue
+    const grounded = known.some((k) => k.length >= 4 && (item.includes(k) || k.includes(item)))
+    if (!grounded) bad.push(m[1])
+  }
+  return bad
+}
+
+// Plain, deterministic rendering of tool results — used when the model's own
+// wording can't be trusted. Contains only what the database returned.
+function renderFromResults(toolResults: { name: string; result: any }[]): string {
+  const parts: string[] = []
+  for (const { name, result } of toolResults) {
+    if (!LIST_TOOLS.has(name) || !result) continue
+    if (name === 'list_tasks' || name === 'list_team_tasks') {
+      const rows = result.tasks ?? []
+      if (rows.length === 0) parts.push('No tasks found.')
+      else
+        parts.push(
+          rows
+            .map(
+              (t: any) =>
+                `- ${t.title}${t.assignee ? ` (${t.assignee})` : ''} — ${t.status ?? ''} — due ${t.due_date ?? '?'}${
+                  t.due_time ? ' ' + String(t.due_time).slice(0, 5) : ''
+                }`,
+            )
+            .join('\n'),
+        )
+    } else if (name === 'list_meetings') {
+      const rows = result.meetings ?? []
+      if (rows.length === 0) parts.push('No meetings found.')
+      else
+        parts.push(
+          rows
+            .map((m: any) => `- ${m.title} — ${m.meeting_date} ${String(m.meeting_time ?? '').slice(0, 5)} — ${m.platform} (${m.status})`)
+            .join('\n'),
+        )
+    } else if (name === 'list_notifications') {
+      const rows = result.notifications ?? []
+      if (rows.length === 0) parts.push('No notifications found.')
+      else parts.push(rows.map((n: any) => `- ${n.title}${n.detail ? ': ' + n.detail : ''}`).join('\n'))
+    }
+  }
+  return parts.join('\n\n') || 'No matching records were found.'
+}
+
 // ---------- Main handler ----------
 
 Deno.serve(async (req) => {
@@ -975,7 +1047,8 @@ Deno.serve(async (req) => {
     let language: string | undefined
     try {
       const body = await req.json()
-      messages = Array.isArray(body?.messages) ? body.messages : []
+      messages = Array.isArray(body?.messages) ? body.messages.slice(-10) : []
+      while (messages.length > 1 && messages[0]?.role === 'assistant') messages.shift()
       language = body?.language
       log(requestId, 'REQUEST_BODY_PARSED')
     } catch (err) {
@@ -1083,13 +1156,34 @@ Deno.serve(async (req) => {
       `ONBOARDING: If asked to set up onboarding for a named new employee, use create_onboarding_checklist.\n\n` +
       `ACCURACY: Never invent information — for policy questions this means ONLY using what search_policy ` +
       `returns, and for task/meeting/people questions this means ONLY using what the tools return, never filling ` +
-      `in plausible-sounding details. If a tool returns nothing useful, say so plainly rather than guessing.`
+      `in plausible-sounding details. If a tool returns nothing useful, say so plainly rather than guessing.\n\n` +
+      `LIVE DATA: Tasks, meetings, notifications and leave balances change constantly. Every time the user ` +
+      `asks about them, call the relevant tool again — never answer from earlier messages in this ` +
+      `conversation. If the tool returns an empty list, tell the user there are none.`
 
     let convo: any[] = [{ role: 'system', content: systemPrompt }, ...messages]
     let lastFailureCode: string | null = null
+    let toolCallsMade = 0
+    const toolResults: { name: string; result: any }[] = []
+    const lastUserText = [...messages].reverse().find((m: any) => m?.role === 'user')?.content ?? ''
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const groqResult = await callGroq(apiKey, { model: GROQ_MODEL, messages: convo, tools, max_tokens: 600 }, requestId)
+      const forceTool = i === 0 && toolCallsMade === 0 && DATA_INTENT.test(String(lastUserText))
+      const buildBody = (force: boolean) => ({
+        model: GROQ_MODEL,
+        messages: convo,
+        tools,
+        max_tokens: 600,
+        temperature: 0.1,
+        ...(force ? { tool_choice: 'required' } : {}),
+      })
+      if (forceTool) log(requestId, 'TOOL_USE_FORCED')
+      let groqResult = await callGroq(apiKey, buildBody(forceTool), requestId)
+      if (!groqResult.ok && forceTool && groqResult.status === 400) {
+        // Some model/endpoint combos reject tool_choice — fall back rather than fail the request.
+        logError(requestId, 'TOOL_CHOICE_REJECTED_RETRYING_AUTO')
+        groqResult = await callGroq(apiKey, buildBody(false), requestId)
+      }
 
       if (!groqResult.ok) {
         logError(requestId, 'REQUEST_FAILURE', `${groqResult.errorCode}: ${groqResult.errorMessage}`)
@@ -1121,7 +1215,9 @@ Deno.serve(async (req) => {
           } catch (err) {
             logError(requestId, `TOOL_ARGS_PARSE_FAILED ${call?.function?.name}`, String(err))
           }
+          toolCallsMade++
           const result = await safeExecuteTool(supabase, me, call?.function?.name, args, requestId)
+          toolResults.push({ name: call?.function?.name, result })
           convo.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
         }
         continue
@@ -1130,7 +1226,16 @@ Deno.serve(async (req) => {
       // Final turn — no more tool calls.
       const content = typeof msg.content === 'string' ? msg.content.trim() : ''
       if (content.length > 0) {
-        log(requestId, `FINAL_RESPONSE_LENGTH ${content.length}`)
+        // Grounding check: if the answer lists items that no tool returned, discard it
+        // and show what the database actually returned instead.
+        if (toolResults.some((t) => LIST_TOOLS.has(t.name))) {
+          const ungrounded = findUngroundedItems(content, toolResults)
+          if (ungrounded.length > 0) {
+            logError(requestId, 'UNGROUNDED_ANSWER_REPLACED', JSON.stringify(ungrounded).slice(0, 300))
+            return jsonResponse({ reply: renderFromResults(toolResults) }, 200, requestId)
+          }
+        }
+        log(requestId, `FINAL_RESPONSE_LENGTH ${content.length} TOOL_CALLS_MADE ${toolCallsMade}`)
         log(requestId, 'REQUEST_SUCCESS')
         return jsonResponse({ reply: content }, 200, requestId)
       }
